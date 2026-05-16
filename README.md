@@ -36,9 +36,9 @@ name = "r2-drive"
 main = "src/worker.ts"
 compatibility_date = "2026-05-16"
 
-routes = [
-  { pattern = "files.example.com/*", custom_domain = true }
-]
+[[routes]]
+pattern = "files.example.com"
+custom_domain = true
 
 [[r2_buckets]]
 binding = "BUCKET"
@@ -51,6 +51,31 @@ ALLOW_DELETES = "true"
 ```
 
 The Worker code expects the R2 binding to be named `BUCKET`.
+
+If you deploy as a Cloudflare **Worker Custom Domain**, use just the hostname:
+
+```toml
+[[routes]]
+pattern = "jdeanda.com"
+custom_domain = true
+```
+
+Do not use this for a custom domain:
+
+```toml
+{ pattern = "jdeanda.com/*", custom_domain = true }
+```
+
+That line is invalid by itself, and `custom_domain = true` should not include
+`/*`.
+
+If you instead want a normal zone route, use this format:
+
+```toml
+[[routes]]
+pattern = "jdeanda.com/*"
+zone_name = "jdeanda.com"
+```
 
 ### Optional users
 

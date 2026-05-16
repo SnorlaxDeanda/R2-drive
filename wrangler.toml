@@ -3,10 +3,12 @@ main = "src/worker.ts"
 compatibility_date = "2026-05-16"
 
 # Bind this Worker to the domain that should host the file explorer.
-# Replace this example with your own domain before deploying:
-# routes = [
-#   { pattern = "files.example.com/*", custom_domain = true }
-# ]
+# For a Cloudflare Worker Custom Domain, uncomment this block and replace
+# the pattern with your hostname. Do not include /* with custom_domain = true.
+#
+# [[routes]]
+# pattern = "files.example.com"
+# custom_domain = true
 
 [[r2_buckets]]
 binding = "BUCKET"
