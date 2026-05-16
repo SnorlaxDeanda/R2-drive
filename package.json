@@ -1,0 +1,33 @@
+{
+  "name": "r2-drive",
+  "version": "1.0.0",
+  "description": "A simple Cloudflare R2 file explorer for a custom domain.",
+  "private": true,
+  "type": "module",
+  "main": "src/worker.ts",
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/SnorlaxDeanda/R2-drive.git"
+  },
+  "keywords": [
+    "cloudflare",
+    "r2",
+    "file-explorer"
+  ],
+  "author": "",
+  "license": "ISC",
+  "bugs": {
+    "url": "https://github.com/SnorlaxDeanda/R2-drive/issues"
+  },
+  "homepage": "https://github.com/SnorlaxDeanda/R2-drive#readme",
+  "devDependencies": {
+    "@cloudflare/workers-types": "^4.20260516.1",
+    "typescript": "^6.0.3",
+    "wrangler": "^4.92.0"
+  }
+}
