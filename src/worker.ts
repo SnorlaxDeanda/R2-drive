@@ -139,9 +139,10 @@ async function getObject(request: Request, env: Env): Promise<Response> {
   let status = 200;
 
   if (range) {
+    const { length, offset } = normalizeReturnedRange(range, object.size);
     status = 206;
-    headers.set("content-length", String(range.length));
-    headers.set("content-range", `bytes ${range.offset}-${range.offset + range.length - 1}/${object.size}`);
+    headers.set("content-length", String(length));
+    headers.set("content-range", `bytes ${offset}-${offset + length - 1}/${object.size}`);
   } else {
     headers.set("content-length", String(object.size));
   }
@@ -160,7 +161,7 @@ async function uploadObjects(request: Request, env: Env): Promise<Response> {
 
   const form = await request.formData();
   const prefix = normalizePrefix(form.get("prefix"));
-  const files = form.getAll("files").filter(isFileWithName);
+  const files = (form.getAll("files") as unknown[]).filter(isFileWithName);
 
   if (files.length === 0) {
     return json({ error: "No files were uploaded" }, 400);
@@ -541,7 +542,7 @@ function renderExplorer(env: Env): string {
         <button class="button" id="refreshButton" type="button">Refresh</button>
         <button class="button" id="newFolderButton" type="button">New folder</button>
         <button class="button primary" id="uploadButton" type="button">Upload files</button>
-        <a class="button" href="/logout">Sign out</a>
+        ${env.AUTH_TOKEN ? '<a class="button" href="/logout">Sign out</a>' : ""}
       </div>
     </header>
 
@@ -1003,7 +1004,7 @@ function html(markup: string, status = 200): Response {
   });
 }
 
-function normalizePrefix(value: FormDataEntryValue | string | null): string {
+function normalizePrefix(value: string | null): string {
   if (typeof value !== "string") return "";
   const withoutLeadingSlash = value.replace(/^\/+/, "");
   const compact = withoutLeadingSlash.replace(/\/{2,}/g, "/");
@@ -1048,8 +1049,8 @@ function basename(key: string): string {
   return key.split("/").filter(Boolean).pop() || "download";
 }
 
-function isFileWithName(value: FormDataEntryValue): value is File {
-  return typeof value !== "string" && value.name.length > 0;
+function isFileWithName(value: unknown): value is File {
+  return value instanceof File && value.name.length > 0;
 }
 
 function isEnabled(value: string | undefined, defaultValue: boolean): boolean {
@@ -1139,4 +1140,18 @@ function safeJson(value: unknown): string {
 
 function safeHeaderFilename(value: string): string {
   return value.replace(/[\\"]/g, "_");
+}
+
+function normalizeReturnedRange(range: NonNullable<R2ObjectBody["range"]>, size: number): { length: number; offset: number } {
+  if ("suffix" in range) {
+    const length = Math.min(range.suffix, size);
+    return {
+      length,
+      offset: Math.max(size - length, 0),
+    };
+  }
+
+  const offset = "offset" in range && typeof range.offset === "number" ? range.offset : 0;
+  const length = "length" in range && typeof range.length === "number" ? range.length : Math.max(size - offset, 0);
+  return { length, offset };
 }
