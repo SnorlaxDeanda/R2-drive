@@ -12,7 +12,7 @@ download objects, and delete objects from a web UI.
 - New folder creation using hidden `.keep` marker objects
 - Open and download links for objects
 - Optional delete support
-- Optional token gate with a Cloudflare Worker secret
+- Optional named users with Cloudflare Worker secrets
 
 ## Requirements
 
@@ -36,9 +36,9 @@ name = "r2-drive"
 main = "src/worker.ts"
 compatibility_date = "2026-05-16"
 
-routes = [
-  { pattern = "files.example.com/*", custom_domain = true }
-]
+[[routes]]
+pattern = "files.example.com"
+custom_domain = true
 
 [[r2_buckets]]
 binding = "BUCKET"
@@ -52,16 +52,61 @@ ALLOW_DELETES = "true"
 
 The Worker code expects the R2 binding to be named `BUCKET`.
 
-### Optional access token
+If you deploy as a Cloudflare **Worker Custom Domain**, use just the hostname:
 
-Without `AUTH_TOKEN`, anyone who can reach the domain can use the explorer. To
-require sign-in, set a Worker secret:
+```toml
+[[routes]]
+pattern = "jdeanda.com"
+custom_domain = true
+```
+
+Do not use this for a custom domain:
+
+```toml
+{ pattern = "jdeanda.com/*", custom_domain = true }
+```
+
+That line is invalid by itself, and `custom_domain = true` should not include
+`/*`.
+
+If you instead want a normal zone route, use this format:
+
+```toml
+[[routes]]
+pattern = "jdeanda.com/*"
+zone_name = "jdeanda.com"
+```
+
+### Optional users
+
+Without auth settings, anyone who can reach the domain can use the explorer. To
+require sign-in and make it easy to add users later, set an `AUTH_USERS` Worker
+secret:
+
+```sh
+npx wrangler secret put AUTH_USERS
+```
+
+When Wrangler asks for the value, paste JSON like this:
+
+```json
+{"alice":"alice-secret-token","bob":"bob-secret-token"}
+```
+
+Users will be redirected to `/login` and must enter their username and token.
+
+To add another user in the future, run the same command again with the updated
+JSON:
+
+```json
+{"alice":"alice-secret-token","bob":"bob-secret-token","charlie":"charlie-secret-token"}
+```
+
+For a single shared token, the app still supports the older `AUTH_TOKEN` secret:
 
 ```sh
 npx wrangler secret put AUTH_TOKEN
 ```
-
-Users will be redirected to `/login` and must enter that token.
 
 ### Disable writes
 
@@ -83,10 +128,10 @@ npm run dev
 ```
 
 Wrangler will use your Cloudflare account and R2 binding configuration. For local
-secret testing, create `.dev.vars`:
+multi-user testing, create `.dev.vars`:
 
 ```ini
-AUTH_TOKEN=replace-with-a-local-token
+AUTH_USERS={"alice":"alice-secret-token","bob":"bob-secret-token"}
 ```
 
 Then open the local Wrangler URL and browse to `/files`.

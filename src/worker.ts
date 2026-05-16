@@ -1,6 +1,7 @@
 interface Env {
   BUCKET: R2Bucket;
   EXPLORER_TITLE?: string;
+  AUTH_USERS?: string;
   AUTH_TOKEN?: string;
   ALLOW_UPLOADS?: string;
   ALLOW_DELETES?: string;
@@ -20,6 +21,11 @@ interface FolderEntry {
   prefix: string;
 }
 
+interface AuthUser {
+  username: string;
+  token: string;
+}
+
 const COOKIE_NAME = "r2_drive_token";
 
 export default {
@@ -31,11 +37,11 @@ export default {
         return redirectWithCookie("/login", clearAuthCookie(url));
       }
 
-      if (env.AUTH_TOKEN && url.pathname === "/login") {
+      if (hasAuth(env) && url.pathname === "/login") {
         return handleLogin(request, env, url);
       }
 
-      if (env.AUTH_TOKEN && !isAuthorized(request, env)) {
+      if (hasAuth(env) && !isAuthorized(request, env)) {
         return unauthorizedResponse(request, url);
       }
 
@@ -236,8 +242,10 @@ async function deleteObject(request: Request, env: Env): Promise<Response> {
 }
 
 async function handleLogin(request: Request, env: Env, url: URL): Promise<Response> {
+  const users = getAuthUsers(env);
+
   if (request.method === "GET") {
-    return html(renderLogin(url), 200);
+    return html(renderLogin(url, users), 200);
   }
 
   if (request.method !== "POST") {
@@ -245,14 +253,16 @@ async function handleLogin(request: Request, env: Env, url: URL): Promise<Respon
   }
 
   const form = await request.formData();
+  const username = String(form.get("username") ?? "");
   const token = String(form.get("token") ?? "");
   const next = safeNextPath(String(form.get("next") ?? "/files"));
+  const user = authenticateUser(users, username, token);
 
-  if (token !== env.AUTH_TOKEN) {
-    return html(renderLogin(url, "The token you entered is not valid."), 401);
+  if (!user) {
+    return html(renderLogin(url, users, "The username or token you entered is not valid."), 401);
   }
 
-  return redirectWithCookie(next, authCookie(token, url));
+  return redirectWithCookie(next, authCookie(user, url));
 }
 
 function renderExplorer(env: Env): string {
@@ -542,7 +552,7 @@ function renderExplorer(env: Env): string {
         <button class="button" id="refreshButton" type="button">Refresh</button>
         <button class="button" id="newFolderButton" type="button">New folder</button>
         <button class="button primary" id="uploadButton" type="button">Upload files</button>
-        ${env.AUTH_TOKEN ? '<a class="button" href="/logout">Sign out</a>' : ""}
+        ${hasAuth(env) ? '<a class="button" href="/logout">Sign out</a>' : ""}
       </div>
     </header>
 
@@ -899,8 +909,9 @@ function renderExplorer(env: Env): string {
 </html>`;
 }
 
-function renderLogin(url: URL, error = ""): string {
+function renderLogin(url: URL, users: AuthUser[], error = ""): string {
   const next = safeNextPath(url.searchParams.get("next") ?? "/files");
+  const showUsername = users.length > 1 || Boolean(users[0]?.username && users[0].username !== "default");
 
   return `<!doctype html>
 <html lang="en">
@@ -974,11 +985,17 @@ function renderLogin(url: URL, error = ""): string {
 <body>
   <form method="post" action="/login">
     <h1>Sign in</h1>
-    <p>Enter the token configured for this R2 explorer.</p>
+    <p>${showUsername ? "Enter your username and access token." : "Enter the token configured for this R2 explorer."}</p>
     ${error ? `<div class="error">${escapeHtml(error)}</div>` : ""}
     <input name="next" type="hidden" value="${escapeHtml(next)}">
+    ${
+      showUsername
+        ? `<label for="username">Username</label>
+    <input autocomplete="username" autofocus id="username" name="username" required type="text">`
+        : ""
+    }
     <label for="token">Access token</label>
-    <input autocomplete="current-password" autofocus id="token" name="token" required type="password">
+    <input autocomplete="current-password" ${showUsername ? "" : "autofocus"} id="token" name="token" required type="password">
     <button type="submit">Open explorer</button>
   </form>
 </body>
@@ -1058,15 +1075,82 @@ function isEnabled(value: string | undefined, defaultValue: boolean): boolean {
   return !["0", "false", "no", "off"].includes(value.toLowerCase());
 }
 
+function hasAuth(env: Env): boolean {
+  return getAuthUsers(env).length > 0;
+}
+
+function getAuthUsers(env: Env): AuthUser[] {
+  const users: AuthUser[] = [];
+
+  if (env.AUTH_USERS?.trim()) {
+    users.push(...parseAuthUsers(env.AUTH_USERS));
+  }
+
+  if (env.AUTH_TOKEN?.trim()) {
+    users.push({
+      username: "default",
+      token: env.AUTH_TOKEN,
+    });
+  }
+
+  return users.filter((user) => user.username.length > 0 && user.token.length > 0);
+}
+
+function parseAuthUsers(value: string): AuthUser[] {
+  const trimmed = value.trim();
+
+  try {
+    const parsed = JSON.parse(trimmed) as unknown;
+    if (!parsed || Array.isArray(parsed) || typeof parsed !== "object") {
+      throw new Error("AUTH_USERS must be a JSON object like {\"alice\":\"secret\"}");
+    }
+
+    return Object.entries(parsed)
+      .filter((entry): entry is [string, string] => typeof entry[1] === "string")
+      .map(([username, token]) => ({
+        username: username.trim(),
+        token,
+      }));
+  } catch (error) {
+    if (trimmed.includes(":")) {
+      return trimmed.split(",").map((pair) => {
+        const separator = pair.indexOf(":");
+        return {
+          username: pair.slice(0, separator).trim(),
+          token: pair.slice(separator + 1),
+        };
+      });
+    }
+
+    throw error;
+  }
+}
+
+function authenticateUser(users: AuthUser[], username: string, token: string): AuthUser | null {
+  const cleanUsername = username.trim();
+  if (!token) return null;
+
+  return (
+    users.find((user) => {
+      const usernameMatches = cleanUsername ? user.username === cleanUsername : users.length === 1;
+      return usernameMatches && user.token === token;
+    }) ?? null
+  );
+}
+
 function isAuthorized(request: Request, env: Env): boolean {
-  const token = env.AUTH_TOKEN;
-  if (!token) return true;
+  const users = getAuthUsers(env);
+  if (users.length === 0) return true;
 
   const authorization = request.headers.get("authorization");
-  if (authorization === `Bearer ${token}`) return true;
+  if (authorization?.startsWith("Bearer ")) {
+    const token = authorization.slice("Bearer ".length);
+    if (users.some((user) => user.token === token)) return true;
+  }
 
   const cookies = parseCookies(request.headers.get("cookie") ?? "");
-  return cookies[COOKIE_NAME] === token;
+  const cookieUser = parseAuthCookie(cookies[COOKIE_NAME]);
+  return Boolean(cookieUser && authenticateUser(users, cookieUser.username, cookieUser.token));
 }
 
 function unauthorizedResponse(request: Request, url: URL): Response {
@@ -1092,9 +1176,10 @@ function parseCookies(header: string): Record<string, string> {
   return cookies;
 }
 
-function authCookie(token: string, url: URL): string {
+function authCookie(user: AuthUser, url: URL): string {
   const secure = url.protocol === "https:" ? "; Secure" : "";
-  return `${COOKIE_NAME}=${encodeURIComponent(token)}; HttpOnly; SameSite=Lax; Path=/; Max-Age=2592000${secure}`;
+  const value = encodeURIComponent(JSON.stringify({ token: user.token, username: user.username }));
+  return `${COOKIE_NAME}=${value}; HttpOnly; SameSite=Lax; Path=/; Max-Age=2592000${secure}`;
 }
 
 function clearAuthCookie(url: URL): string {
@@ -1110,6 +1195,27 @@ function redirectWithCookie(location: string, cookie: string): Response {
     },
     status: 302,
   });
+}
+
+function parseAuthCookie(value: string | undefined): AuthUser | null {
+  if (!value) return null;
+
+  try {
+    const parsed = JSON.parse(value) as Partial<AuthUser>;
+    if (typeof parsed.username === "string" && typeof parsed.token === "string") {
+      return {
+        username: parsed.username,
+        token: parsed.token,
+      };
+    }
+  } catch {
+    return {
+      username: "",
+      token: value,
+    };
+  }
+
+  return null;
 }
 
 function safeNextPath(value: string): string {
