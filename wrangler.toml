@@ -1,0 +1,22 @@
+name = "r2-drive"
+main = "src/worker.ts"
+compatibility_date = "2026-05-16"
+
+# Bind this Worker to the domain that should host the file explorer.
+# Replace this example with your own domain before deploying:
+# routes = [
+#   { pattern = "files.example.com/*", custom_domain = true }
+# ]
+
+[[r2_buckets]]
+binding = "BUCKET"
+bucket_name = "your-r2-bucket-name"
+
+[vars]
+EXPLORER_TITLE = "R2 Drive"
+ALLOW_UPLOADS = "true"
+ALLOW_DELETES = "true"
+
+# Optional password-style protection:
+# 1. Set a secret: `npx wrangler secret put AUTH_TOKEN`
+# 2. Open the explorer and sign in with that token.
