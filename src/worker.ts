@@ -360,6 +360,7 @@ function renderExplorer(request: Request, env: Env): string {
       display: inline-flex;
       font-weight: 650;
       gap: 8px;
+      min-height: 44px;
       padding: 10px 14px;
       text-decoration: none;
       transition: 0.16s ease;
@@ -502,6 +503,7 @@ function renderExplorer(request: Request, env: Env): string {
       color: var(--accent-dark);
       cursor: pointer;
       font-weight: 700;
+      min-height: 40px;
       padding: 4px;
       text-decoration: none;
     }
@@ -535,6 +537,154 @@ function renderExplorer(request: Request, env: Env): string {
       }
       .shell {
         padding: 22px 12px 36px;
+      }
+      .brand {
+        align-items: flex-start;
+      }
+      .logo {
+        border-radius: 14px;
+        flex: 0 0 auto;
+        font-size: 18px;
+        height: 42px;
+        width: 42px;
+      }
+      .subtitle {
+        font-size: 14px;
+      }
+      .actions {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        width: 100%;
+      }
+      .button {
+        justify-content: center;
+        text-align: center;
+        width: 100%;
+      }
+      .card {
+        border-radius: 18px;
+      }
+      .toolbar {
+        padding: 14px 16px;
+      }
+      .breadcrumbs {
+        gap: 5px;
+        line-height: 1.7;
+      }
+      .dropzone {
+        padding: 14px 16px;
+        text-align: center;
+      }
+      .table-wrap {
+        overflow-x: visible;
+        padding: 12px;
+      }
+      table,
+      tbody,
+      tr,
+      td {
+        display: block;
+        min-width: 0;
+        width: 100%;
+      }
+      table {
+        border-collapse: separate;
+      }
+      thead {
+        display: none;
+      }
+      tbody {
+        display: grid;
+        gap: 12px;
+      }
+      tr.folder,
+      tr.file {
+        background: var(--card);
+        border: 1px solid var(--line);
+        border-radius: 16px;
+        padding: 12px;
+      }
+      tr.folder:hover,
+      tr.file:hover {
+        background: var(--card);
+      }
+      td {
+        align-items: center;
+        border-bottom: 0;
+        color: var(--text);
+        display: flex;
+        gap: 16px;
+        justify-content: space-between;
+        padding: 7px 2px;
+        text-align: right;
+      }
+      td::before {
+        color: var(--muted);
+        content: attr(data-label);
+        flex: 0 0 auto;
+        font-size: 12px;
+        font-weight: 700;
+        letter-spacing: 0.06em;
+        text-align: left;
+        text-transform: uppercase;
+      }
+      td:first-child {
+        border-bottom: 1px solid var(--line);
+        margin-bottom: 6px;
+        padding-bottom: 12px;
+        text-align: left;
+      }
+      td:first-child::before,
+      td.actions-cell::before {
+        display: none;
+      }
+      .name-cell {
+        min-width: 0;
+        width: 100%;
+      }
+      .name-cell span:last-child {
+        overflow-wrap: anywhere;
+      }
+      .actions-cell {
+        padding-top: 12px;
+      }
+      .actions-cell.no-actions {
+        display: none;
+      }
+      .row-actions {
+        display: grid;
+        gap: 8px;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        width: 100%;
+      }
+      .link-button {
+        align-items: center;
+        background: #f8fafd;
+        border: 1px solid var(--line);
+        border-radius: 12px;
+        display: inline-flex;
+        justify-content: center;
+        padding: 9px 10px;
+        text-align: center;
+      }
+      .link-button.danger {
+        background: #fff5f5;
+        border-color: #ffd1d1;
+      }
+      .empty {
+        padding: 30px 16px;
+      }
+    }
+    @media (max-width: 420px) {
+      .shell {
+        padding: 16px 8px 28px;
+      }
+      .actions,
+      .row-actions {
+        grid-template-columns: 1fr;
+      }
+      .brand {
+        gap: 10px;
       }
     }
   </style>
@@ -695,10 +845,10 @@ function renderExplorer(request: Request, env: Env): string {
       });
 
       row.appendChild(nameCell("folder", folder.name + "/"));
-      row.appendChild(mutedCell("--"));
-      row.appendChild(mutedCell("--"));
-      row.appendChild(mutedCell("Folder"));
-      row.appendChild(document.createElement("td"));
+      row.appendChild(mutedCell("--", "Last modified"));
+      row.appendChild(mutedCell("--", "Size"));
+      row.appendChild(mutedCell("Folder", "Type"));
+      row.appendChild(actionsCell());
       return row;
     }
 
@@ -706,11 +856,12 @@ function renderExplorer(request: Request, env: Env): string {
       const row = document.createElement("tr");
       row.className = "file";
       row.appendChild(nameCell("file", file.name));
-      row.appendChild(textCell(formatDate(file.uploaded)));
-      row.appendChild(textCell(formatSize(file.size)));
-      row.appendChild(textCell(file.contentType || "Object"));
+      row.appendChild(textCell(formatDate(file.uploaded), "Last modified"));
+      row.appendChild(textCell(formatSize(file.size), "Size"));
+      row.appendChild(textCell(file.contentType || "Object", "Type"));
 
-      const actions = document.createElement("td");
+      const actions = actionsCell();
+      actions.classList.remove("no-actions");
       const actionWrap = document.createElement("div");
       actionWrap.className = "row-actions";
 
@@ -744,6 +895,7 @@ function renderExplorer(request: Request, env: Env): string {
 
     function nameCell(kind, name) {
       const cell = document.createElement("td");
+      cell.dataset.label = "Name";
       const wrap = document.createElement("div");
       wrap.className = "name-cell";
       const icon = document.createElement("span");
@@ -756,15 +908,23 @@ function renderExplorer(request: Request, env: Env): string {
       return cell;
     }
 
-    function textCell(value) {
+    function textCell(value, label) {
       const cell = document.createElement("td");
+      cell.dataset.label = label;
       cell.textContent = value;
       return cell;
     }
 
-    function mutedCell(value) {
-      const cell = textCell(value);
+    function mutedCell(value, label) {
+      const cell = textCell(value, label);
       cell.className = "muted";
+      return cell;
+    }
+
+    function actionsCell() {
+      const cell = document.createElement("td");
+      cell.className = "actions-cell no-actions";
+      cell.dataset.label = "Actions";
       return cell;
     }
 
