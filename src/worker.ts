@@ -55,6 +55,10 @@ export default {
         return Response.redirect(`${url.origin}/files`, 302);
       }
 
+      if (url.pathname === "/favicon.ico" && request.method === "GET") {
+        return Response.redirect(FAVICON_URL, 302);
+      }
+
       if (url.pathname === "/api/list" && request.method === "GET") {
         return listObjects(request, env);
       }
@@ -281,6 +285,7 @@ function renderExplorer(request: Request, env: Env): string {
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>${escapeHtml(title)}</title>
+  <link rel="icon" type="image/png" href="${FAVICON_URL}">
   <style>
     :root {
       color-scheme: light;
@@ -1084,6 +1089,7 @@ function renderLogin(url: URL, users: AuthUser[], error = ""): string {
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Sign in - R2 Drive</title>
+  <link rel="icon" type="image/png" href="${FAVICON_URL}">
   <style>
     body {
       align-items: center;
