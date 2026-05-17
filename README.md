@@ -45,7 +45,7 @@ binding = "BUCKET"
 bucket_name = "your-r2-bucket-name"
 
 [vars]
-EXPLORER_TITLE = "R2 Drive"
+EXPLORER_TITLE = "Book Vault
 ALLOW_UPLOADS = "true"
 ALLOW_DELETES = "true"
 ```

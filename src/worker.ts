@@ -704,7 +704,8 @@ function renderExplorer(request: Request, env: Env): string {
         <div class="logo" aria-hidden="true">R2</div>
         <div>
           <h1>${escapeHtml(title)}</h1>
-          <div class="subtitle">Browse and manage files stored in Cloudflare R2.</div>
+          <div class="subtitle">Welcome to Joe's book Vault! Please reachout on discord
+          for any requests. thatoneguy5633</div>
         </div>
       </div>
       <div class="actions">
