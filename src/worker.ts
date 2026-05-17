@@ -22,6 +22,7 @@ interface FolderEntry {
 }
 
 interface AuthUser {
+  canDelete: boolean;
   username: string;
   token: string;
 }
@@ -74,7 +75,7 @@ export default {
       }
 
       if (request.method === "GET" && (url.pathname === "/files" || url.pathname.startsWith("/files/"))) {
-        return html(renderExplorer(env), 200);
+        return html(renderExplorer(request, env), 200);
       }
 
       return json({ error: "Not found" }, 404);
@@ -231,7 +232,7 @@ async function createFolder(request: Request, env: Env): Promise<Response> {
 }
 
 async function deleteObject(request: Request, env: Env): Promise<Response> {
-  if (!isEnabled(env.ALLOW_DELETES, true)) {
+  if (!canDeleteObjects(request, env)) {
     return json({ error: "Deletes are disabled" }, 403);
   }
 
@@ -265,10 +266,10 @@ async function handleLogin(request: Request, env: Env, url: URL): Promise<Respon
   return redirectWithCookie(next, authCookie(user, url));
 }
 
-function renderExplorer(env: Env): string {
+function renderExplorer(request: Request, env: Env): string {
   const title = env.EXPLORER_TITLE || "R2 Drive";
   const config = safeJson({
-    allowDeletes: isEnabled(env.ALLOW_DELETES, true),
+    allowDeletes: canDeleteObjects(request, env),
     allowUploads: isEnabled(env.ALLOW_UPLOADS, true),
     title,
   });
@@ -1088,6 +1089,7 @@ function getAuthUsers(env: Env): AuthUser[] {
 
   if (env.AUTH_TOKEN?.trim()) {
     users.push({
+      canDelete: isEnabled(env.ALLOW_DELETES, true),
       username: "default",
       token: env.AUTH_TOKEN,
     });
@@ -1106,16 +1108,14 @@ function parseAuthUsers(value: string): AuthUser[] {
     }
 
     return Object.entries(parsed)
-      .filter((entry): entry is [string, string] => typeof entry[1] === "string")
-      .map(([username, token]) => ({
-        username: username.trim(),
-        token,
-      }));
+      .map(([username, userConfig]) => parseAuthUser(username, userConfig))
+      .filter((user): user is AuthUser => user !== null);
   } catch (error) {
     if (trimmed.includes(":")) {
       return trimmed.split(",").map((pair) => {
         const separator = pair.indexOf(":");
         return {
+          canDelete: false,
           username: pair.slice(0, separator).trim(),
           token: pair.slice(separator + 1),
         };
@@ -1124,6 +1124,31 @@ function parseAuthUsers(value: string): AuthUser[] {
 
     throw error;
   }
+}
+
+function parseAuthUser(username: string, value: unknown): AuthUser | null {
+  if (typeof value === "string") {
+    return {
+      canDelete: false,
+      username: username.trim(),
+      token: value,
+    };
+  }
+
+  if (!value || Array.isArray(value) || typeof value !== "object") {
+    return null;
+  }
+
+  const config = value as { canDelete?: unknown; token?: unknown };
+  if (typeof config.token !== "string") {
+    return null;
+  }
+
+  return {
+    canDelete: config.canDelete === true,
+    username: username.trim(),
+    token: config.token,
+  };
 }
 
 function authenticateUser(users: AuthUser[], username: string, token: string): AuthUser | null {
@@ -1139,18 +1164,39 @@ function authenticateUser(users: AuthUser[], username: string, token: string): A
 }
 
 function isAuthorized(request: Request, env: Env): boolean {
+  return getCurrentUser(request, env) !== null;
+}
+
+function canDeleteObjects(request: Request, env: Env): boolean {
+  if (!isEnabled(env.ALLOW_DELETES, true)) return false;
+
   const users = getAuthUsers(env);
   if (users.length === 0) return true;
+
+  const user = getCurrentUser(request, env);
+  return Boolean(user?.canDelete);
+}
+
+function getCurrentUser(request: Request, env: Env): AuthUser | null {
+  const users = getAuthUsers(env);
+  if (users.length === 0) {
+    return {
+      canDelete: isEnabled(env.ALLOW_DELETES, true),
+      username: "anonymous",
+      token: "",
+    };
+  }
 
   const authorization = request.headers.get("authorization");
   if (authorization?.startsWith("Bearer ")) {
     const token = authorization.slice("Bearer ".length);
-    if (users.some((user) => user.token === token)) return true;
+    const user = users.find((candidate) => candidate.token === token);
+    if (user) return user;
   }
 
   const cookies = parseCookies(request.headers.get("cookie") ?? "");
   const cookieUser = parseAuthCookie(cookies[COOKIE_NAME]);
-  return Boolean(cookieUser && authenticateUser(users, cookieUser.username, cookieUser.token));
+  return cookieUser ? authenticateUser(users, cookieUser.username, cookieUser.token) : null;
 }
 
 function unauthorizedResponse(request: Request, url: URL): Response {
@@ -1204,12 +1250,14 @@ function parseAuthCookie(value: string | undefined): AuthUser | null {
     const parsed = JSON.parse(value) as Partial<AuthUser>;
     if (typeof parsed.username === "string" && typeof parsed.token === "string") {
       return {
+        canDelete: false,
         username: parsed.username,
         token: parsed.token,
       };
     }
   } catch {
     return {
+      canDelete: false,
       username: "",
       token: value,
     };
