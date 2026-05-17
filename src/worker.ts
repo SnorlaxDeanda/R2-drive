@@ -283,15 +283,15 @@ function renderExplorer(request: Request, env: Env): string {
   <style>
     :root {
       color-scheme: light;
-      --bg: #f6f7fb;
+      --bg: #b01aa8;
       --card: #ffffff;
       --text: #182033;
       --muted: #647084;
       --line: #dde3ee;
-      --accent: #f38020;
-      --accent-dark: #c95f0c;
+      --accent: #1ab021;
+      --accent-dark: #148a1a;
       --danger: #c62828;
-      --shadow: 0 18px 45px rgba(34, 42, 61, 0.09);
+      --shadow: 0 18px 45px rgba(42, 6, 40, 0.24);
     }
     * {
       box-sizing: border-box;
@@ -299,7 +299,7 @@ function renderExplorer(request: Request, env: Env): string {
     body {
       margin: 0;
       min-height: 100vh;
-      background: radial-gradient(circle at top left, rgba(243, 128, 32, 0.16), transparent 34rem), var(--bg);
+      background: var(--bg);
       color: var(--text);
       font: 15px/1.5 ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
     }
@@ -318,6 +318,7 @@ function renderExplorer(request: Request, env: Env): string {
       gap: 16px;
       justify-content: space-between;
       margin-bottom: 24px;
+      color: white;
     }
     .brand {
       align-items: center;
@@ -341,7 +342,7 @@ function renderExplorer(request: Request, env: Env): string {
       margin: 0;
     }
     .subtitle {
-      color: var(--muted);
+      color: rgba(255, 255, 255, 0.82);
       margin-top: 4px;
     }
     .actions {
@@ -352,10 +353,10 @@ function renderExplorer(request: Request, env: Env): string {
     }
     .button {
       align-items: center;
-      background: var(--card);
-      border: 1px solid var(--line);
+      background: var(--accent);
+      border: 1px solid var(--accent);
       border-radius: 12px;
-      color: var(--text);
+      color: white;
       cursor: pointer;
       display: inline-flex;
       font-weight: 650;
@@ -367,7 +368,8 @@ function renderExplorer(request: Request, env: Env): string {
       white-space: nowrap;
     }
     .button:hover {
-      border-color: #c8d2e1;
+      background: var(--accent-dark);
+      border-color: var(--accent-dark);
       transform: translateY(-1px);
     }
     .button.primary {
@@ -422,9 +424,9 @@ function renderExplorer(request: Request, env: Env): string {
     }
     .dropzone {
       align-items: center;
-      background: #fff9f3;
-      border-bottom: 1px dashed #f1b67b;
-      color: #7d4b1e;
+      background: #f2fff3;
+      border-bottom: 1px dashed #7ade7f;
+      color: #116d16;
       display: flex;
       gap: 10px;
       justify-content: center;
@@ -432,8 +434,8 @@ function renderExplorer(request: Request, env: Env): string {
       transition: 0.16s ease;
     }
     .dropzone.dragging {
-      background: #ffe6ce;
-      color: #4b2d12;
+      background: #dcffde;
+      color: #0d4f11;
     }
     .dropzone.hidden {
       display: none;
@@ -484,10 +486,10 @@ function renderExplorer(request: Request, env: Env): string {
       width: 32px;
     }
     .icon.folder {
-      background: #fff0de;
+      background: #fbe7fa;
     }
     .icon.file {
-      background: #eef4ff;
+      background: #e9fbe9;
     }
     .muted {
       color: var(--muted);
@@ -659,7 +661,7 @@ function renderExplorer(request: Request, env: Env): string {
       }
       .link-button {
         align-items: center;
-        background: #f8fafd;
+        background: #f2fff3;
         border: 1px solid var(--line);
         border-radius: 12px;
         display: inline-flex;
@@ -1083,7 +1085,7 @@ function renderLogin(url: URL, users: AuthUser[], error = ""): string {
   <style>
     body {
       align-items: center;
-      background: #f6f7fb;
+      background: #b01aa8;
       color: #182033;
       display: flex;
       font: 15px/1.5 ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
@@ -1096,7 +1098,7 @@ function renderLogin(url: URL, users: AuthUser[], error = ""): string {
       background: white;
       border: 1px solid #dde3ee;
       border-radius: 22px;
-      box-shadow: 0 18px 45px rgba(34, 42, 61, 0.09);
+      box-shadow: 0 18px 45px rgba(42, 6, 40, 0.24);
       max-width: 420px;
       padding: 28px;
       width: 100%;
@@ -1122,7 +1124,7 @@ function renderLogin(url: URL, users: AuthUser[], error = ""): string {
       width: 100%;
     }
     button {
-      background: #f38020;
+      background: #1ab021;
       border: 0;
       border-radius: 12px;
       color: white;
@@ -1132,6 +1134,9 @@ function renderLogin(url: URL, users: AuthUser[], error = ""): string {
       margin-top: 16px;
       padding: 11px 14px;
       width: 100%;
+    }
+    button:hover {
+      background: #148a1a;
     }
     .error {
       background: #fff0f0;
