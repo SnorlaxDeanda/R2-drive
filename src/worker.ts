@@ -29,6 +29,7 @@ interface AuthUser {
 
 const COOKIE_NAME = "r2_drive_token";
 const FAVICON_URL = "https://www.freeiconspng.com/download/138";
+const LOGO_URL = "https://www.pngmart.com/files/22/Snorlax-Pokemon-PNG.gif";
 
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
@@ -340,7 +341,14 @@ function renderExplorer(request: Request, env: Env): string {
       font-size: 24px;
       height: 48px;
       justify-content: center;
+      overflow: hidden;
       width: 48px;
+    }
+    .logo img {
+      display: block;
+      height: 100%;
+      object-fit: contain;
+      width: 100%;
     }
     h1 {
       font-size: clamp(24px, 4vw, 34px);
@@ -701,7 +709,9 @@ function renderExplorer(request: Request, env: Env): string {
   <main class="shell">
     <header class="topbar">
       <div class="brand">
-        <div class="logo" aria-hidden="true">R2</div>
+        <div class="logo" aria-hidden="true">
+          <img src="${LOGO_URL}" alt="">
+        </div>
         <div>
           <h1>${escapeHtml(title)}</h1>
           <div class="subtitle">Welcome to Joe's book Vault! Please reachout on discord
