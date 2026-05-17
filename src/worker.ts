@@ -28,6 +28,7 @@ interface AuthUser {
 }
 
 const COOKIE_NAME = "r2_drive_token";
+const FAVICON_URL = "https://www.freeiconspng.com/download/138";
 
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
