@@ -95,11 +95,30 @@ When Wrangler asks for the value, paste JSON like this:
 
 Users will be redirected to `/login` and must enter their username and token.
 
+By default, users in the simple format can browse and upload, but they cannot
+delete. To let one user delete files, use the expanded format and set
+`canDelete` to `true` for that user:
+
+```json
+{
+  "john": {
+    "token": "john-secret-token",
+    "canDelete": true
+  },
+  "jane": "jane-secret-token",
+  "sam": "sam-secret-token"
+}
+```
+
+In that example, `john` can delete files. `jane` and `sam` cannot delete files.
+`ALLOW_DELETES` must also stay set to `"true"` in `wrangler.toml`; setting it to
+`"false"` disables deletes for everyone.
+
 To add another user in the future, run the same command again with the updated
 JSON:
 
 ```json
-{"alice":"alice-secret-token","bob":"bob-secret-token","charlie":"charlie-secret-token"}
+{"john":{"token":"john-secret-token","canDelete":true},"jane":"jane-secret-token","sam":"sam-secret-token","charlie":"charlie-secret-token"}
 ```
 
 For a single shared token, the app still supports the older `AUTH_TOKEN` secret:

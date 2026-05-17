@@ -22,6 +22,7 @@ interface FolderEntry {
 }
 
 interface AuthUser {
+  canDelete: boolean;
   username: string;
   token: string;
 }
@@ -74,7 +75,7 @@ export default {
       }
 
       if (request.method === "GET" && (url.pathname === "/files" || url.pathname.startsWith("/files/"))) {
-        return html(renderExplorer(env), 200);
+        return html(renderExplorer(request, env), 200);
       }
 
       return json({ error: "Not found" }, 404);
@@ -231,7 +232,7 @@ async function createFolder(request: Request, env: Env): Promise<Response> {
 }
 
 async function deleteObject(request: Request, env: Env): Promise<Response> {
-  if (!isEnabled(env.ALLOW_DELETES, true)) {
+  if (!canDeleteObjects(request, env)) {
     return json({ error: "Deletes are disabled" }, 403);
   }
 
@@ -265,10 +266,10 @@ async function handleLogin(request: Request, env: Env, url: URL): Promise<Respon
   return redirectWithCookie(next, authCookie(user, url));
 }
 
-function renderExplorer(env: Env): string {
+function renderExplorer(request: Request, env: Env): string {
   const title = env.EXPLORER_TITLE || "R2 Drive";
   const config = safeJson({
-    allowDeletes: isEnabled(env.ALLOW_DELETES, true),
+    allowDeletes: canDeleteObjects(request, env),
     allowUploads: isEnabled(env.ALLOW_UPLOADS, true),
     title,
   });
@@ -359,6 +360,7 @@ function renderExplorer(env: Env): string {
       display: inline-flex;
       font-weight: 650;
       gap: 8px;
+      min-height: 44px;
       padding: 10px 14px;
       text-decoration: none;
       transition: 0.16s ease;
@@ -501,6 +503,7 @@ function renderExplorer(env: Env): string {
       color: var(--accent-dark);
       cursor: pointer;
       font-weight: 700;
+      min-height: 40px;
       padding: 4px;
       text-decoration: none;
     }
@@ -534,6 +537,154 @@ function renderExplorer(env: Env): string {
       }
       .shell {
         padding: 22px 12px 36px;
+      }
+      .brand {
+        align-items: flex-start;
+      }
+      .logo {
+        border-radius: 14px;
+        flex: 0 0 auto;
+        font-size: 18px;
+        height: 42px;
+        width: 42px;
+      }
+      .subtitle {
+        font-size: 14px;
+      }
+      .actions {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        width: 100%;
+      }
+      .button {
+        justify-content: center;
+        text-align: center;
+        width: 100%;
+      }
+      .card {
+        border-radius: 18px;
+      }
+      .toolbar {
+        padding: 14px 16px;
+      }
+      .breadcrumbs {
+        gap: 5px;
+        line-height: 1.7;
+      }
+      .dropzone {
+        padding: 14px 16px;
+        text-align: center;
+      }
+      .table-wrap {
+        overflow-x: visible;
+        padding: 12px;
+      }
+      table,
+      tbody,
+      tr,
+      td {
+        display: block;
+        min-width: 0;
+        width: 100%;
+      }
+      table {
+        border-collapse: separate;
+      }
+      thead {
+        display: none;
+      }
+      tbody {
+        display: grid;
+        gap: 12px;
+      }
+      tr.folder,
+      tr.file {
+        background: var(--card);
+        border: 1px solid var(--line);
+        border-radius: 16px;
+        padding: 12px;
+      }
+      tr.folder:hover,
+      tr.file:hover {
+        background: var(--card);
+      }
+      td {
+        align-items: center;
+        border-bottom: 0;
+        color: var(--text);
+        display: flex;
+        gap: 16px;
+        justify-content: space-between;
+        padding: 7px 2px;
+        text-align: right;
+      }
+      td::before {
+        color: var(--muted);
+        content: attr(data-label);
+        flex: 0 0 auto;
+        font-size: 12px;
+        font-weight: 700;
+        letter-spacing: 0.06em;
+        text-align: left;
+        text-transform: uppercase;
+      }
+      td:first-child {
+        border-bottom: 1px solid var(--line);
+        margin-bottom: 6px;
+        padding-bottom: 12px;
+        text-align: left;
+      }
+      td:first-child::before,
+      td.actions-cell::before {
+        display: none;
+      }
+      .name-cell {
+        min-width: 0;
+        width: 100%;
+      }
+      .name-cell span:last-child {
+        overflow-wrap: anywhere;
+      }
+      .actions-cell {
+        padding-top: 12px;
+      }
+      .actions-cell.no-actions {
+        display: none;
+      }
+      .row-actions {
+        display: grid;
+        gap: 8px;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        width: 100%;
+      }
+      .link-button {
+        align-items: center;
+        background: #f8fafd;
+        border: 1px solid var(--line);
+        border-radius: 12px;
+        display: inline-flex;
+        justify-content: center;
+        padding: 9px 10px;
+        text-align: center;
+      }
+      .link-button.danger {
+        background: #fff5f5;
+        border-color: #ffd1d1;
+      }
+      .empty {
+        padding: 30px 16px;
+      }
+    }
+    @media (max-width: 420px) {
+      .shell {
+        padding: 16px 8px 28px;
+      }
+      .actions,
+      .row-actions {
+        grid-template-columns: 1fr;
+      }
+      .brand {
+        gap: 10px;
       }
     }
   </style>
@@ -694,10 +845,10 @@ function renderExplorer(env: Env): string {
       });
 
       row.appendChild(nameCell("folder", folder.name + "/"));
-      row.appendChild(mutedCell("--"));
-      row.appendChild(mutedCell("--"));
-      row.appendChild(mutedCell("Folder"));
-      row.appendChild(document.createElement("td"));
+      row.appendChild(mutedCell("--", "Last modified"));
+      row.appendChild(mutedCell("--", "Size"));
+      row.appendChild(mutedCell("Folder", "Type"));
+      row.appendChild(actionsCell());
       return row;
     }
 
@@ -705,11 +856,12 @@ function renderExplorer(env: Env): string {
       const row = document.createElement("tr");
       row.className = "file";
       row.appendChild(nameCell("file", file.name));
-      row.appendChild(textCell(formatDate(file.uploaded)));
-      row.appendChild(textCell(formatSize(file.size)));
-      row.appendChild(textCell(file.contentType || "Object"));
+      row.appendChild(textCell(formatDate(file.uploaded), "Last modified"));
+      row.appendChild(textCell(formatSize(file.size), "Size"));
+      row.appendChild(textCell(file.contentType || "Object", "Type"));
 
-      const actions = document.createElement("td");
+      const actions = actionsCell();
+      actions.classList.remove("no-actions");
       const actionWrap = document.createElement("div");
       actionWrap.className = "row-actions";
 
@@ -743,6 +895,7 @@ function renderExplorer(env: Env): string {
 
     function nameCell(kind, name) {
       const cell = document.createElement("td");
+      cell.dataset.label = "Name";
       const wrap = document.createElement("div");
       wrap.className = "name-cell";
       const icon = document.createElement("span");
@@ -755,15 +908,23 @@ function renderExplorer(env: Env): string {
       return cell;
     }
 
-    function textCell(value) {
+    function textCell(value, label) {
       const cell = document.createElement("td");
+      cell.dataset.label = label;
       cell.textContent = value;
       return cell;
     }
 
-    function mutedCell(value) {
-      const cell = textCell(value);
+    function mutedCell(value, label) {
+      const cell = textCell(value, label);
       cell.className = "muted";
+      return cell;
+    }
+
+    function actionsCell() {
+      const cell = document.createElement("td");
+      cell.className = "actions-cell no-actions";
+      cell.dataset.label = "Actions";
       return cell;
     }
 
@@ -1088,6 +1249,7 @@ function getAuthUsers(env: Env): AuthUser[] {
 
   if (env.AUTH_TOKEN?.trim()) {
     users.push({
+      canDelete: isEnabled(env.ALLOW_DELETES, true),
       username: "default",
       token: env.AUTH_TOKEN,
     });
@@ -1106,16 +1268,14 @@ function parseAuthUsers(value: string): AuthUser[] {
     }
 
     return Object.entries(parsed)
-      .filter((entry): entry is [string, string] => typeof entry[1] === "string")
-      .map(([username, token]) => ({
-        username: username.trim(),
-        token,
-      }));
+      .map(([username, userConfig]) => parseAuthUser(username, userConfig))
+      .filter((user): user is AuthUser => user !== null);
   } catch (error) {
     if (trimmed.includes(":")) {
       return trimmed.split(",").map((pair) => {
         const separator = pair.indexOf(":");
         return {
+          canDelete: false,
           username: pair.slice(0, separator).trim(),
           token: pair.slice(separator + 1),
         };
@@ -1124,6 +1284,31 @@ function parseAuthUsers(value: string): AuthUser[] {
 
     throw error;
   }
+}
+
+function parseAuthUser(username: string, value: unknown): AuthUser | null {
+  if (typeof value === "string") {
+    return {
+      canDelete: false,
+      username: username.trim(),
+      token: value,
+    };
+  }
+
+  if (!value || Array.isArray(value) || typeof value !== "object") {
+    return null;
+  }
+
+  const config = value as { canDelete?: unknown; token?: unknown };
+  if (typeof config.token !== "string") {
+    return null;
+  }
+
+  return {
+    canDelete: config.canDelete === true,
+    username: username.trim(),
+    token: config.token,
+  };
 }
 
 function authenticateUser(users: AuthUser[], username: string, token: string): AuthUser | null {
@@ -1139,18 +1324,39 @@ function authenticateUser(users: AuthUser[], username: string, token: string): A
 }
 
 function isAuthorized(request: Request, env: Env): boolean {
+  return getCurrentUser(request, env) !== null;
+}
+
+function canDeleteObjects(request: Request, env: Env): boolean {
+  if (!isEnabled(env.ALLOW_DELETES, true)) return false;
+
   const users = getAuthUsers(env);
   if (users.length === 0) return true;
+
+  const user = getCurrentUser(request, env);
+  return Boolean(user?.canDelete);
+}
+
+function getCurrentUser(request: Request, env: Env): AuthUser | null {
+  const users = getAuthUsers(env);
+  if (users.length === 0) {
+    return {
+      canDelete: isEnabled(env.ALLOW_DELETES, true),
+      username: "anonymous",
+      token: "",
+    };
+  }
 
   const authorization = request.headers.get("authorization");
   if (authorization?.startsWith("Bearer ")) {
     const token = authorization.slice("Bearer ".length);
-    if (users.some((user) => user.token === token)) return true;
+    const user = users.find((candidate) => candidate.token === token);
+    if (user) return user;
   }
 
   const cookies = parseCookies(request.headers.get("cookie") ?? "");
   const cookieUser = parseAuthCookie(cookies[COOKIE_NAME]);
-  return Boolean(cookieUser && authenticateUser(users, cookieUser.username, cookieUser.token));
+  return cookieUser ? authenticateUser(users, cookieUser.username, cookieUser.token) : null;
 }
 
 function unauthorizedResponse(request: Request, url: URL): Response {
@@ -1204,12 +1410,14 @@ function parseAuthCookie(value: string | undefined): AuthUser | null {
     const parsed = JSON.parse(value) as Partial<AuthUser>;
     if (typeof parsed.username === "string" && typeof parsed.token === "string") {
       return {
+        canDelete: false,
         username: parsed.username,
         token: parsed.token,
       };
     }
   } catch {
     return {
+      canDelete: false,
       username: "",
       token: value,
     };
