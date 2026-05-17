@@ -6,7 +6,7 @@ compatibility_date = "2026-05-16"
 # For a Cloudflare Worker Custom Domain, use the hostname only.
 # Do not include /* with custom_domain = true.
 [[routes]]
-pattern = "jdeanda.com"
+pattern = "jdbooks.fyi"
 custom_domain = true
 
 [[r2_buckets]]
