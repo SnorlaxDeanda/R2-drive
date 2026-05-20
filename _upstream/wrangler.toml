@@ -1,0 +1,28 @@
+name = "r2-drive"
+main = "src/worker.ts"
+compatibility_date = "2026-05-16"
+
+# Bind this Worker to the domain that should host the file explorer.
+# For a Cloudflare Worker Custom Domain, use the hostname only.
+# Do not include /* with custom_domain = true.
+[[routes]]
+pattern = "jdbooks.fyi"
+custom_domain = true
+
+[[r2_buckets]]
+binding = "BUCKET"
+bucket_name = "media"
+
+[vars]
+EXPLORER_TITLE = "Book Vault"
+ALLOW_UPLOADS = "true"
+ALLOW_DELETES = "true"
+
+# Optional user protection:
+# 1. Set a secret: `npx wrangler secret put AUTH_USERS`
+# 2. Paste JSON such as:
+#    {"alice":{"token":"secret-one","canDelete":true},"bob":"secret-two"}
+# 3. Open the explorer and sign in with a username and token.
+#
+# For a single shared token, `AUTH_TOKEN` is still supported:
+# `npx wrangler secret put AUTH_TOKEN`
