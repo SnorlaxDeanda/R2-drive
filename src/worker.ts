@@ -295,8 +295,9 @@ function renderExplorer(request: Request, env: Env): string {
       --text: #182033;
       --muted: #647084;
       --line: #dde3ee;
-      --accent: #1ab021;
-      --accent-dark: #148a1a;
+      --accent: #f4c542;
+      --accent-dark: #d69b12;
+      --accent-text: #2a0630;
       --danger: #c62828;
       --shadow: 0 18px 45px rgba(42, 6, 40, 0.24);
     }
@@ -370,7 +371,7 @@ function renderExplorer(request: Request, env: Env): string {
       background: var(--accent);
       border: 1px solid var(--accent);
       border-radius: 12px;
-      color: white;
+      color: var(--accent-text);
       cursor: pointer;
       display: inline-flex;
       font-weight: 650;
@@ -389,7 +390,7 @@ function renderExplorer(request: Request, env: Env): string {
     .button.primary {
       background: var(--accent);
       border-color: var(--accent);
-      color: white;
+      color: var(--accent-text);
     }
     .button.primary:hover {
       background: var(--accent-dark);
@@ -423,7 +424,7 @@ function renderExplorer(request: Request, env: Env): string {
     .crumb {
       background: transparent;
       border: 0;
-      color: var(--accent-dark);
+      color: #8a5a00;
       cursor: pointer;
       font-weight: 700;
       padding: 0;
@@ -438,9 +439,9 @@ function renderExplorer(request: Request, env: Env): string {
     }
     .dropzone {
       align-items: center;
-      background: #f2fff3;
-      border-bottom: 1px dashed #7ade7f;
-      color: #116d16;
+      background: #fff8df;
+      border-bottom: 1px dashed #e7bc36;
+      color: #5e4200;
       display: flex;
       gap: 10px;
       justify-content: center;
@@ -448,8 +449,8 @@ function renderExplorer(request: Request, env: Env): string {
       transition: 0.16s ease;
     }
     .dropzone.dragging {
-      background: #dcffde;
-      color: #0d4f11;
+      background: #ffefb3;
+      color: #4a3200;
     }
     .dropzone.hidden {
       display: none;
@@ -503,7 +504,7 @@ function renderExplorer(request: Request, env: Env): string {
       background: #fbe7fa;
     }
     .icon.file {
-      background: #e9fbe9;
+      background: #fff4c7;
     }
     .muted {
       color: var(--muted);
@@ -516,7 +517,7 @@ function renderExplorer(request: Request, env: Env): string {
     .link-button {
       background: transparent;
       border: 0;
-      color: var(--accent-dark);
+      color: #8a5a00;
       cursor: pointer;
       font-weight: 700;
       min-height: 40px;
@@ -675,7 +676,7 @@ function renderExplorer(request: Request, env: Env): string {
       }
       .link-button {
         align-items: center;
-        background: #f2fff3;
+        background: #fff8df;
         border: 1px solid var(--line);
         border-radius: 12px;
         display: inline-flex;
@@ -1142,10 +1143,10 @@ function renderLogin(url: URL, users: AuthUser[], error = ""): string {
       width: 100%;
     }
     button {
-      background: #1ab021;
+      background: #f4c542;
       border: 0;
       border-radius: 12px;
-      color: white;
+      color: #2a0630;
       cursor: pointer;
       font: inherit;
       font-weight: 700;
@@ -1154,7 +1155,7 @@ function renderLogin(url: URL, users: AuthUser[], error = ""): string {
       width: 100%;
     }
     button:hover {
-      background: #148a1a;
+      background: #d69b12;
     }
     .error {
       background: #fff0f0;
