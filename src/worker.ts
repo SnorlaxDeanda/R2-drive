@@ -80,6 +80,10 @@ export default {
         return deleteObject(request, env);
       }
 
+      if (request.method === "GET" && url.pathname === "/reader") {
+        return html(renderReader(request, env, url), 200);
+      }
+
       if (request.method === "GET" && (url.pathname === "/files" || url.pathname.startsWith("/files/"))) {
         return html(renderExplorer(request, env), 200);
       }
@@ -272,8 +276,285 @@ async function handleLogin(request: Request, env: Env, url: URL): Promise<Respon
   return redirectWithCookie(next, authCookie(user, url));
 }
 
+function readerKind(name: string): "cbz" | "epub" | null {
+  const lower = name.toLowerCase();
+  if (lower.endsWith(".cbz")) return "cbz";
+  if (lower.endsWith(".epub")) return "epub";
+  return null;
+}
+
+function renderReader(request: Request, env: Env, url: URL): string {
+  const title = env.EXPLORER_TITLE || "Comic Vault";
+  const key = url.searchParams.get("key") ?? "";
+  const name = basename(key);
+  const kind = readerKind(name);
+
+  if (!key || !kind) {
+    return `<!doctype html><html><body><p>Missing or unsupported file. <a href="/files">Back to library</a></p></body></html>`;
+  }
+
+  const config = safeJson({
+    key,
+    kind,
+    name,
+    objectUrl: objectUrlForKey(key),
+    title,
+  });
+
+  return `<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>${escapeHtml(name)} — ${escapeHtml(title)}</title>
+  <script src="https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/epubjs@0.3.93/dist/epub.min.js"></script>
+  <style>
+    :root {
+      color-scheme: dark;
+      --bg: #0f1117;
+      --panel: #1a1f2e;
+      --text: #f2f4f8;
+      --muted: #9aa3b5;
+      --accent: #ff6b35;
+      --line: #2b3347;
+    }
+    * { box-sizing: border-box; }
+    html, body { margin: 0; height: 100%; background: var(--bg); color: var(--text); font: 15px/1.4 ui-sans-serif, system-ui, sans-serif; }
+    .reader-shell { display: flex; flex-direction: column; height: 100%; }
+    .reader-top {
+      align-items: center;
+      background: var(--panel);
+      border-bottom: 1px solid var(--line);
+      display: flex;
+      gap: 12px;
+      justify-content: space-between;
+      padding: 10px 14px;
+    }
+    .reader-top h1 { font-size: 16px; margin: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .reader-top .meta { color: var(--muted); font-size: 13px; }
+    .reader-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+    .btn {
+      background: #2a3348;
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      color: var(--text);
+      cursor: pointer;
+      font: inherit;
+      font-weight: 600;
+      padding: 8px 12px;
+      text-decoration: none;
+    }
+    .btn.primary { background: var(--accent); border-color: var(--accent); color: #111; }
+    .btn:disabled { cursor: not-allowed; opacity: 0.45; }
+    .stage {
+      align-items: center;
+      display: flex;
+      flex: 1;
+      justify-content: center;
+      min-height: 0;
+      overflow: hidden;
+      position: relative;
+    }
+    #cbzStage { width: 100%; height: 100%; display: none; align-items: center; justify-content: center; padding: 12px; }
+    #cbzStage.active { display: flex; }
+    #cbzImage {
+      max-height: 100%;
+      max-width: 100%;
+      object-fit: contain;
+      user-select: none;
+    }
+    #epubStage { width: 100%; height: 100%; display: none; }
+    #epubStage.active { display: block; }
+    #epubView { width: 100%; height: 100%; background: #fff; }
+    .reader-bar {
+      align-items: center;
+      background: var(--panel);
+      border-top: 1px solid var(--line);
+      display: flex;
+      gap: 10px;
+      justify-content: center;
+      padding: 12px 14px calc(12px + env(safe-area-inset-bottom));
+    }
+    .status { color: var(--muted); min-width: 120px; text-align: center; }
+    .loading {
+      color: var(--muted);
+      inset: 0;
+      position: absolute;
+      display: grid;
+      place-items: center;
+    }
+    .hidden { display: none !important; }
+    @media (max-width: 640px) {
+      .reader-top { align-items: flex-start; flex-direction: column; }
+      .reader-actions { width: 100%; }
+      .reader-actions .btn { flex: 1; text-align: center; }
+    }
+  </style>
+</head>
+<body>
+  <div class="reader-shell">
+    <header class="reader-top">
+      <div>
+        <h1 id="bookTitle">${escapeHtml(name)}</h1>
+        <div class="meta" id="readerMeta">Loading…</div>
+      </div>
+      <div class="reader-actions">
+        <a class="btn" href="/files">Library</a>
+        <a class="btn" id="downloadBtn" href="${escapeHtml(objectUrlForKey(key, true))}">Download</a>
+      </div>
+    </header>
+    <section class="stage" id="stage">
+      <div class="loading" id="loading">Opening book…</div>
+      <div id="cbzStage"><img alt="Comic page" id="cbzImage"></div>
+      <div id="epubStage"><div id="epubView"></div></div>
+    </section>
+    <footer class="reader-bar" id="cbzBar">
+      <button class="btn" id="prevBtn" type="button">Prev</button>
+      <span class="status" id="pageStatus">—</span>
+      <button class="btn" id="nextBtn" type="button">Next</button>
+      <button class="btn" id="fitBtn" type="button">Fit width</button>
+    </footer>
+    <footer class="reader-bar hidden" id="epubBar">
+      <button class="btn" id="epubPrev" type="button">Prev</button>
+      <span class="status" id="epubStatus">EPUB</span>
+      <button class="btn" id="epubNext" type="button">Next</button>
+    </footer>
+  </div>
+  <script>
+    const readerConfig = ${config};
+    const loadingEl = document.querySelector("#loading");
+    const cbzStage = document.querySelector("#cbzStage");
+    const epubStage = document.querySelector("#epubStage");
+    const cbzBar = document.querySelector("#cbzBar");
+    const epubBar = document.querySelector("#epubBar");
+    const cbzImage = document.querySelector("#cbzImage");
+    const pageStatus = document.querySelector("#pageStatus");
+    const readerMeta = document.querySelector("#readerMeta");
+    const prevBtn = document.querySelector("#prevBtn");
+    const nextBtn = document.querySelector("#nextBtn");
+    const fitBtn = document.querySelector("#fitBtn");
+    const epubPrev = document.querySelector("#epubPrev");
+    const epubNext = document.querySelector("#epubNext");
+    const epubStatus = document.querySelector("#epubStatus");
+
+    let cbzPages = [];
+    let cbzIndex = 0;
+    let cbzFitWidth = true;
+    let epubBook = null;
+    let epubRendition = null;
+
+    const imageExt = /\\.(jpe?g|png|gif|webp|bmp|avif)$/i;
+
+    init().catch((error) => {
+      readerMeta.textContent = error.message || "Could not open this file.";
+      loadingEl.classList.add("hidden");
+    });
+
+    async function init() {
+      if (readerConfig.kind === "cbz") {
+        cbzBar.classList.remove("hidden");
+        epubBar.classList.add("hidden");
+        await openCbz();
+        return;
+      }
+      cbzBar.classList.add("hidden");
+      epubBar.classList.remove("hidden");
+      await openEpub();
+    }
+
+    async function openCbz() {
+      readerMeta.textContent = "Unpacking archive…";
+      const response = await fetch(readerConfig.objectUrl);
+      if (!response.ok) throw new Error("Could not download CBZ file.");
+      const buffer = await response.arrayBuffer();
+      const zip = await JSZip.loadAsync(buffer);
+      const names = Object.keys(zip.files)
+        .filter((name) => !zip.files[name].dir && imageExt.test(name))
+        .sort(naturalSort);
+      if (names.length === 0) throw new Error("No images found in this archive.");
+      cbzPages = [];
+      for (const name of names) {
+        const blob = await zip.files[name].async("blob");
+        cbzPages.push(URL.createObjectURL(blob));
+      }
+      cbzStage.classList.add("active");
+      loadingEl.classList.add("hidden");
+      readerMeta.textContent = names.length + " pages";
+      showCbzPage(0);
+      prevBtn.addEventListener("click", () => showCbzPage(cbzIndex - 1));
+      nextBtn.addEventListener("click", () => showCbzPage(cbzIndex + 1));
+      fitBtn.addEventListener("click", () => {
+        cbzFitWidth = !cbzFitWidth;
+        fitBtn.textContent = cbzFitWidth ? "Fit height" : "Fit width";
+        applyCbzFit();
+      });
+    }
+
+    function showCbzPage(index) {
+      cbzIndex = Math.max(0, Math.min(index, cbzPages.length - 1));
+      cbzImage.src = cbzPages[cbzIndex];
+      pageStatus.textContent = (cbzIndex + 1) + " / " + cbzPages.length;
+      prevBtn.disabled = cbzIndex === 0;
+      nextBtn.disabled = cbzIndex >= cbzPages.length - 1;
+      applyCbzFit();
+    }
+
+    function applyCbzFit() {
+      cbzImage.style.width = cbzFitWidth ? "100%" : "auto";
+      cbzImage.style.height = cbzFitWidth ? "auto" : "100%";
+    }
+
+    async function openEpub() {
+      readerMeta.textContent = "Rendering EPUB…";
+      epubStage.classList.add("active");
+      epubBook = ePub(readerConfig.objectUrl, { openAs: "epub" });
+      await epubBook.ready;
+      epubRendition = epubBook.renderTo("epubView", {
+        width: "100%",
+        height: "100%",
+        flow: "paginated",
+        spread: "auto"
+      });
+      await epubRendition.display();
+      loadingEl.classList.add("hidden");
+      readerMeta.textContent = "EPUB reader";
+      epubPrev.addEventListener("click", () => epubRendition.prev());
+      epubNext.addEventListener("click", () => epubRendition.next());
+      epubBook.locations.generate(1024).then(() => {
+        epubStatus.textContent = "Ready";
+      });
+    }
+
+    function naturalSort(left, right) {
+      return left.localeCompare(right, undefined, { numeric: true, sensitivity: "base" });
+    }
+
+    document.addEventListener("keydown", (event) => {
+      if (readerConfig.kind === "cbz") {
+        if (event.key === "ArrowLeft" || event.key === "PageUp") showCbzPage(cbzIndex - 1);
+        if (event.key === "ArrowRight" || event.key === "PageDown" || event.key === " ") {
+          event.preventDefault();
+          showCbzPage(cbzIndex + 1);
+        }
+      } else if (epubRendition) {
+        if (event.key === "ArrowLeft" || event.key === "PageUp") epubRendition.prev();
+        if (event.key === "ArrowRight" || event.key === "PageDown") epubRendition.next();
+      }
+    });
+  </script>
+</body>
+</html>`;
+}
+
+function objectUrlForKey(key: string, download = false): string {
+  const params = new URLSearchParams({ key });
+  if (download) params.set("download", "1");
+  return "/api/object?" + params.toString();
+}
+
 function renderExplorer(request: Request, env: Env): string {
-  const title = env.EXPLORER_TITLE || "R2 Drive";
+  const title = env.EXPLORER_TITLE || "Comic Vault";
   const config = safeJson({
     allowDeletes: canDeleteObjects(request, env),
     allowUploads: isEnabled(env.ALLOW_UPLOADS, true),
@@ -289,16 +570,16 @@ function renderExplorer(request: Request, env: Env): string {
   <link rel="icon" type="image/png" href="${FAVICON_URL}">
   <style>
     :root {
-      color-scheme: light;
-      --bg: #b01aa8;
-      --card: #ffffff;
-      --text: #182033;
-      --muted: #647084;
-      --line: #dde3ee;
-      --accent: #1ab021;
-      --accent-dark: #148a1a;
-      --danger: #c62828;
-      --shadow: 0 18px 45px rgba(42, 6, 40, 0.24);
+      color-scheme: dark;
+      --bg: #12151f;
+      --card: #1a1f2e;
+      --text: #f2f4f8;
+      --muted: #9aa3b5;
+      --line: #2b3347;
+      --accent: #ff6b35;
+      --accent-dark: #e85a28;
+      --danger: #ff6b6b;
+      --shadow: 0 18px 45px rgba(0, 0, 0, 0.35);
     }
     * {
       box-sizing: border-box;
@@ -325,7 +606,7 @@ function renderExplorer(request: Request, env: Env): string {
       gap: 16px;
       justify-content: space-between;
       margin-bottom: 24px;
-      color: white;
+      color: var(--text);
     }
     .brand {
       align-items: center;
@@ -356,8 +637,9 @@ function renderExplorer(request: Request, env: Env): string {
       margin: 0;
     }
     .subtitle {
-      color: rgba(255, 255, 255, 0.82);
+      color: var(--muted);
       margin-top: 4px;
+      max-width: 52ch;
     }
     .actions {
       display: flex;
@@ -389,7 +671,7 @@ function renderExplorer(request: Request, env: Env): string {
     .button.primary {
       background: var(--accent);
       border-color: var(--accent);
-      color: white;
+      color: #111;
     }
     .button.primary:hover {
       background: var(--accent-dark);
@@ -399,8 +681,8 @@ function renderExplorer(request: Request, env: Env): string {
       color: var(--danger);
     }
     .card {
-      background: rgba(255, 255, 255, 0.92);
-      border: 1px solid rgba(221, 227, 238, 0.9);
+      background: var(--card);
+      border: 1px solid var(--line);
       border-radius: 24px;
       box-shadow: var(--shadow);
       overflow: hidden;
@@ -438,9 +720,9 @@ function renderExplorer(request: Request, env: Env): string {
     }
     .dropzone {
       align-items: center;
-      background: #f2fff3;
-      border-bottom: 1px dashed #7ade7f;
-      color: #116d16;
+      background: #222938;
+      border-bottom: 1px dashed #4a556d;
+      color: var(--muted);
       display: flex;
       gap: 10px;
       justify-content: center;
@@ -448,8 +730,8 @@ function renderExplorer(request: Request, env: Env): string {
       transition: 0.16s ease;
     }
     .dropzone.dragging {
-      background: #dcffde;
-      color: #0d4f11;
+      background: #2a3145;
+      color: var(--text);
     }
     .dropzone.hidden {
       display: none;
@@ -483,7 +765,7 @@ function renderExplorer(request: Request, env: Env): string {
     }
     tr.folder:hover,
     tr.file:hover {
-      background: #fbfcff;
+      background: #222938;
     }
     .name-cell {
       align-items: center;
@@ -500,10 +782,16 @@ function renderExplorer(request: Request, env: Env): string {
       width: 32px;
     }
     .icon.folder {
-      background: #fbe7fa;
+      background: #2d3550;
     }
     .icon.file {
-      background: #e9fbe9;
+      background: #3a2b24;
+    }
+    .icon.comic {
+      background: #3a2b24;
+      color: var(--accent);
+      font-size: 11px;
+      font-weight: 800;
     }
     .muted {
       color: var(--muted);
@@ -675,7 +963,7 @@ function renderExplorer(request: Request, env: Env): string {
       }
       .link-button {
         align-items: center;
-        background: #f2fff3;
+        background: #222938;
         border: 1px solid var(--line);
         border-radius: 12px;
         display: inline-flex;
@@ -684,8 +972,8 @@ function renderExplorer(request: Request, env: Env): string {
         text-align: center;
       }
       .link-button.danger {
-        background: #fff5f5;
-        border-color: #ffd1d1;
+        background: #3a2222;
+        border-color: #6b3030;
       }
       .empty {
         padding: 30px 16px;
@@ -709,13 +997,10 @@ function renderExplorer(request: Request, env: Env): string {
   <main class="shell">
     <header class="topbar">
       <div class="brand">
-        <div class="logo" aria-hidden="true">
-          <img src="${LOGO_URL}" alt="">
-        </div>
+        <div class="logo" aria-hidden="true">📚</div>
         <div>
           <h1>${escapeHtml(title)}</h1>
-          <div class="subtitle">Welcome to Joe's book Vault! Please reachout on discord
-          for any requests. thatoneguy5633</div>
+          <div class="subtitle">Cloudflare R2 library for comics and ebooks. Upload CBZ or EPUB files, organize folders, and read in the browser.</div>
         </div>
       </div>
       <div class="actions">
@@ -731,7 +1016,7 @@ function renderExplorer(request: Request, env: Env): string {
         <nav class="breadcrumbs" id="breadcrumbs" aria-label="Current folder"></nav>
         <div class="status" id="status"></div>
       </div>
-      <div class="dropzone" id="dropzone">Drop files here to upload to the current folder.</div>
+      <div class="dropzone" id="dropzone">Drop CBZ, EPUB, or other files here to upload to the current folder.</div>
       <div class="table-wrap">
         <table>
           <thead>
@@ -752,7 +1037,7 @@ function renderExplorer(request: Request, env: Env): string {
       </div>
     </section>
   </main>
-  <input class="hidden" id="fileInput" multiple type="file">
+  <input accept=".cbz,.epub,.cbr,.pdf,image/*" class="hidden" id="fileInput" multiple type="file">
 
   <script>
     const appConfig = ${config};
@@ -874,22 +1159,31 @@ function renderExplorer(request: Request, env: Env): string {
     function fileRow(file) {
       const row = document.createElement("tr");
       row.className = "file";
-      row.appendChild(nameCell("file", file.name));
+      const comic = isComicFile(file.name);
+      row.appendChild(nameCell(comic ? "comic" : "file", file.name, comic ? "BOOK" : null));
       row.appendChild(textCell(formatDate(file.uploaded), "Last modified"));
       row.appendChild(textCell(formatSize(file.size), "Size"));
-      row.appendChild(textCell(file.contentType || "Object", "Type"));
+      row.appendChild(textCell(file.contentType || guessType(file.name), "Type"));
 
       const actions = actionsCell();
       actions.classList.remove("no-actions");
       const actionWrap = document.createElement("div");
       actionWrap.className = "row-actions";
 
+      if (comic) {
+        const readLink = document.createElement("a");
+        readLink.className = "link-button";
+        readLink.href = readerUrl(file.key);
+        readLink.textContent = "Read";
+        actionWrap.appendChild(readLink);
+      }
+
       const openLink = document.createElement("a");
       openLink.className = "link-button";
       openLink.href = objectUrl(file.key);
       openLink.target = "_blank";
       openLink.rel = "noopener";
-      openLink.textContent = "Open";
+      openLink.textContent = comic ? "Raw" : "Open";
       actionWrap.appendChild(openLink);
 
       const downloadLink = document.createElement("a");
@@ -912,14 +1206,31 @@ function renderExplorer(request: Request, env: Env): string {
       return row;
     }
 
-    function nameCell(kind, name) {
+    function isComicFile(name) {
+      const lower = name.toLowerCase();
+      return lower.endsWith(".cbz") || lower.endsWith(".epub");
+    }
+
+    function guessType(name) {
+      const lower = name.toLowerCase();
+      if (lower.endsWith(".cbz")) return "Comic (CBZ)";
+      if (lower.endsWith(".epub")) return "Ebook (EPUB)";
+      if (lower.endsWith(".cbr")) return "Comic (CBR)";
+      return "Object";
+    }
+
+    function readerUrl(key) {
+      return "/reader?key=" + encodeURIComponent(key);
+    }
+
+    function nameCell(kind, name, iconLabel) {
       const cell = document.createElement("td");
       cell.dataset.label = "Name";
       const wrap = document.createElement("div");
       wrap.className = "name-cell";
       const icon = document.createElement("span");
       icon.className = "icon " + kind;
-      icon.textContent = kind === "folder" ? "DIR" : "FILE";
+      icon.textContent = iconLabel || (kind === "folder" ? "DIR" : kind === "comic" ? "BOOK" : "FILE");
       const label = document.createElement("span");
       label.textContent = name;
       wrap.append(icon, label);
@@ -1098,12 +1409,12 @@ function renderLogin(url: URL, users: AuthUser[], error = ""): string {
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Sign in - R2 Drive</title>
+  <title>Sign in - Comic Vault</title>
   <link rel="icon" type="image/png" href="${FAVICON_URL}">
   <style>
     body {
       align-items: center;
-      background: #b01aa8;
+      background: #12151f;
       color: #182033;
       display: flex;
       font: 15px/1.5 ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;

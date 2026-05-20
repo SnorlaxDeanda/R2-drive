@@ -14,6 +14,14 @@ download objects, and delete objects from a web UI.
 - Optional delete support
 - Optional named users with Cloudflare Worker secrets
 
+### Comic reader (`comic-reader` branch)
+
+- In-browser **CBZ** viewer (page-by-page images, keyboard navigation)
+- In-browser **EPUB** viewer (epub.js)
+- **Read** action on `.cbz` and `.epub` files → `GET /reader?key=...`
+
+CBR (RAR) is not supported in the browser; convert to CBZ. Reader scripts load from jsDelivr (JSZip + epub.js).
+
 ## Requirements
 
 - Node.js
@@ -175,3 +183,4 @@ The UI uses these same-origin routes:
 - `POST /api/upload` uploads multipart form files using `prefix` and `files`.
 - `POST /api/folder` creates a folder marker from JSON `{ "prefix", "name" }`.
 - `DELETE /api/object?key=<key>` deletes an object.
+- `GET /reader?key=<key>` opens the CBZ/EPUB reader (`comic-reader` branch).
