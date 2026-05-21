@@ -295,9 +295,9 @@ function renderExplorer(request: Request, env: Env): string {
       --text: #182033;
       --muted: #647084;
       --line: #dde3ee;
-      --accent: #1a5eb0;
-      --accent-dark: #12437f;
-      --accent-text: #ffffff;
+      --accent: #ffffff;
+      --accent-dark: #f4edf7;
+      --accent-text: #2a0630;
       --danger: #c62828;
       --shadow: 0 18px 45px rgba(42, 6, 40, 0.24);
     }
@@ -424,7 +424,7 @@ function renderExplorer(request: Request, env: Env): string {
     .crumb {
       background: transparent;
       border: 0;
-      color: #1a5eb0;
+      color: #2a0630;
       cursor: pointer;
       font-weight: 700;
       padding: 0;
@@ -439,9 +439,9 @@ function renderExplorer(request: Request, env: Env): string {
     }
     .dropzone {
       align-items: center;
-      background: #eaf3ff;
-      border-bottom: 1px dashed #79a9e1;
-      color: #123f75;
+      background: #ffffff;
+      border-bottom: 1px dashed #e7dbea;
+      color: #2a0630;
       display: flex;
       gap: 10px;
       justify-content: center;
@@ -449,8 +449,8 @@ function renderExplorer(request: Request, env: Env): string {
       transition: 0.16s ease;
     }
     .dropzone.dragging {
-      background: #d8eaff;
-      color: #0f335f;
+      background: #f4edf7;
+      color: #2a0630;
     }
     .dropzone.hidden {
       display: none;
@@ -504,7 +504,7 @@ function renderExplorer(request: Request, env: Env): string {
       background: #fbe7fa;
     }
     .icon.file {
-      background: #e3f0ff;
+      background: #ffffff;
     }
     .muted {
       color: var(--muted);
@@ -517,7 +517,7 @@ function renderExplorer(request: Request, env: Env): string {
     .link-button {
       background: transparent;
       border: 0;
-      color: #1a5eb0;
+      color: #2a0630;
       cursor: pointer;
       font-weight: 700;
       min-height: 40px;
@@ -676,7 +676,7 @@ function renderExplorer(request: Request, env: Env): string {
       }
       .link-button {
         align-items: center;
-        background: #eaf3ff;
+        background: #ffffff;
         border: 1px solid var(--line);
         border-radius: 12px;
         display: inline-flex;
@@ -1143,10 +1143,10 @@ function renderLogin(url: URL, users: AuthUser[], error = ""): string {
       width: 100%;
     }
     button {
-      background: #1a5eb0;
-      border: 0;
+      background: #ffffff;
+      border: 1px solid #dde3ee;
       border-radius: 12px;
-      color: #ffffff;
+      color: #2a0630;
       cursor: pointer;
       font: inherit;
       font-weight: 700;
@@ -1155,7 +1155,7 @@ function renderLogin(url: URL, users: AuthUser[], error = ""): string {
       width: 100%;
     }
     button:hover {
-      background: #12437f;
+      background: #f4edf7;
     }
     .error {
       background: #fff0f0;
