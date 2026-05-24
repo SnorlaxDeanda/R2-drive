@@ -8,6 +8,7 @@ interface Env {
 }
 
 interface FileEntry {
+  book?: BookInfo;
   key: string;
   name: string;
   size: number;
@@ -21,6 +22,14 @@ interface FolderEntry {
   prefix: string;
 }
 
+interface BookInfo {
+  author?: string;
+  coverKey?: string;
+  coverUrl?: string;
+  description?: string;
+  title?: string;
+}
+
 interface AuthUser {
   canDelete: boolean;
   username: string;
@@ -30,6 +39,7 @@ interface AuthUser {
 const COOKIE_NAME = "r2_drive_token";
 const FAVICON_URL = "https://www.freeiconspng.com/download/138";
 const LOGO_URL = "https://www.pngmart.com/files/22/Snorlax-Pokemon-PNG.gif";
+const BOOK_METADATA_KEY = "_book-metadata.json";
 
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
@@ -96,6 +106,7 @@ async function listObjects(request: Request, env: Env): Promise<Response> {
   const url = new URL(request.url);
   const prefix = normalizePrefix(url.searchParams.get("prefix"));
   const cursor = url.searchParams.get("cursor") || undefined;
+  const bookMetadata = await getBookMetadata(env);
   const listed = await env.BUCKET.list({
     cursor,
     delimiter: "/",
@@ -113,14 +124,19 @@ async function listObjects(request: Request, env: Env): Promise<Response> {
   const files: FileEntry[] = listed.objects
     .filter((object) => shouldShowObject(object.key, prefix))
     .sort((left, right) => left.key.localeCompare(right.key))
-    .map((object) => ({
-      key: object.key,
-      name: object.key.slice(prefix.length),
-      size: object.size,
-      uploaded: object.uploaded.toISOString(),
-      contentType: object.httpMetadata?.contentType,
-      etag: object.httpEtag,
-    }));
+    .map((object) => {
+      const name = object.key.slice(prefix.length);
+
+      return {
+        book: findBookInfo(bookMetadata, object.key, name),
+        key: object.key,
+        name,
+        size: object.size,
+        uploaded: object.uploaded.toISOString(),
+        contentType: object.httpMetadata?.contentType,
+        etag: object.httpEtag,
+      };
+    });
 
   return json({
     cursor: listed.truncated ? listed.cursor : null,
@@ -492,6 +508,58 @@ function renderExplorer(request: Request, env: Env): string {
       gap: 10px;
       min-width: 280px;
     }
+    .book-cell {
+      align-items: flex-start;
+      display: flex;
+      gap: 14px;
+      min-width: 340px;
+    }
+    .book-cover {
+      align-items: center;
+      background: #f4edf7;
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      color: var(--muted);
+      display: flex;
+      flex: 0 0 58px;
+      font-size: 11px;
+      font-weight: 700;
+      height: 82px;
+      justify-content: center;
+      overflow: hidden;
+      text-align: center;
+      text-transform: uppercase;
+      width: 58px;
+    }
+    .book-cover img {
+      display: block;
+      height: 100%;
+      object-fit: cover;
+      width: 100%;
+    }
+    .book-details {
+      min-width: 0;
+    }
+    .book-title {
+      color: var(--text);
+      font-weight: 800;
+      overflow-wrap: anywhere;
+    }
+    .book-author,
+    .book-filename {
+      color: var(--muted);
+      font-size: 13px;
+      margin-top: 2px;
+      overflow-wrap: anywhere;
+    }
+    .book-description {
+      color: #38445a;
+      font-size: 13px;
+      line-height: 1.4;
+      margin-top: 6px;
+      max-width: 42rem;
+      overflow-wrap: anywhere;
+    }
     .icon {
       align-items: center;
       border-radius: 10px;
@@ -658,6 +726,15 @@ function renderExplorer(request: Request, env: Env): string {
       .name-cell {
         min-width: 0;
         width: 100%;
+      }
+      .book-cell {
+        min-width: 0;
+        width: 100%;
+      }
+      .book-cover {
+        flex-basis: 52px;
+        height: 74px;
+        width: 52px;
       }
       .name-cell span:last-child {
         overflow-wrap: anywhere;
@@ -875,7 +952,7 @@ function renderExplorer(request: Request, env: Env): string {
     function fileRow(file) {
       const row = document.createElement("tr");
       row.className = "file";
-      row.appendChild(nameCell("file", file.name));
+      row.appendChild(file.book ? bookCell(file) : nameCell("file", file.name));
       row.appendChild(textCell(formatDate(file.uploaded), "Last modified"));
       row.appendChild(textCell(formatSize(file.size), "Size"));
       row.appendChild(textCell(file.contentType || "Object", "Type"));
@@ -911,6 +988,67 @@ function renderExplorer(request: Request, env: Env): string {
       actions.appendChild(actionWrap);
       row.appendChild(actions);
       return row;
+    }
+
+    function bookCell(file) {
+      const book = file.book || {};
+      const title = book.title || file.name;
+      const coverSrc = bookCoverUrl(book);
+      const cell = document.createElement("td");
+      cell.dataset.label = "Book";
+
+      const wrap = document.createElement("div");
+      wrap.className = "book-cell";
+
+      const cover = document.createElement("div");
+      cover.className = "book-cover";
+
+      if (coverSrc) {
+        const image = document.createElement("img");
+        image.src = coverSrc;
+        image.alt = "";
+        image.loading = "lazy";
+        image.addEventListener("error", () => {
+          image.remove();
+          cover.textContent = "No cover";
+        });
+        cover.appendChild(image);
+      } else {
+        cover.textContent = "No cover";
+      }
+
+      const details = document.createElement("div");
+      details.className = "book-details";
+
+      const titleEl = document.createElement("div");
+      titleEl.className = "book-title";
+      titleEl.textContent = title;
+      details.appendChild(titleEl);
+
+      if (book.author) {
+        const author = document.createElement("div");
+        author.className = "book-author";
+        author.textContent = "by " + book.author;
+        details.appendChild(author);
+      }
+
+      if (title !== file.name) {
+        const filename = document.createElement("div");
+        filename.className = "book-filename";
+        filename.textContent = file.name;
+        details.appendChild(filename);
+      }
+
+      if (book.description) {
+        const description = document.createElement("div");
+        description.className = "book-description";
+        description.textContent = book.description;
+        details.appendChild(description);
+      }
+
+      wrap.append(cover, details);
+      cell.appendChild(wrap);
+      return cell;
     }
 
     function nameCell(kind, name) {
@@ -1064,6 +1202,12 @@ function renderExplorer(request: Request, env: Env): string {
       const params = new URLSearchParams({ key });
       if (download) params.set("download", "1");
       return "/api/object?" + params.toString();
+    }
+
+    function bookCoverUrl(book) {
+      if (book.coverUrl) return book.coverUrl;
+      if (book.coverKey) return objectUrl(book.coverKey);
+      return "";
     }
 
     function formatSize(bytes) {
@@ -1237,10 +1381,70 @@ function normalizeFolderName(value: string): string {
   return normalized;
 }
 
+async function getBookMetadata(env: Env): Promise<Map<string, BookInfo>> {
+  const object = await env.BUCKET.get(BOOK_METADATA_KEY);
+  if (!object) return new Map();
+
+  try {
+    const parsed = JSON.parse(await object.text()) as unknown;
+    return parseBookMetadata(parsed);
+  } catch {
+    return new Map();
+  }
+}
+
+function parseBookMetadata(value: unknown): Map<string, BookInfo> {
+  const map = new Map<string, BookInfo>();
+  const source = unwrapBookMetadata(value);
+
+  if (!source || Array.isArray(source) || typeof source !== "object") {
+    return map;
+  }
+
+  for (const [key, metadata] of Object.entries(source)) {
+    const info = parseBookInfo(metadata);
+    if (key.trim() && info) {
+      map.set(key, info);
+    }
+  }
+
+  return map;
+}
+
+function unwrapBookMetadata(value: unknown): unknown {
+  if (!value || Array.isArray(value) || typeof value !== "object") {
+    return value;
+  }
+
+  const maybeWrapped = value as { books?: unknown };
+  return maybeWrapped.books ?? value;
+}
+
+function parseBookInfo(value: unknown): BookInfo | null {
+  if (!value || Array.isArray(value) || typeof value !== "object") {
+    return null;
+  }
+
+  const raw = value as Record<string, unknown>;
+  const info: BookInfo = {};
+
+  if (typeof raw.author === "string") info.author = raw.author;
+  if (typeof raw.coverKey === "string") info.coverKey = raw.coverKey;
+  if (typeof raw.coverUrl === "string") info.coverUrl = raw.coverUrl;
+  if (typeof raw.description === "string") info.description = raw.description;
+  if (typeof raw.title === "string") info.title = raw.title;
+
+  return Object.keys(info).length > 0 ? info : null;
+}
+
+function findBookInfo(metadata: Map<string, BookInfo>, key: string, name: string): BookInfo | undefined {
+  return metadata.get(key) ?? metadata.get(name);
+}
+
 function shouldShowObject(key: string, prefix: string): boolean {
   if (key === prefix || !key.startsWith(prefix)) return false;
   const name = key.slice(prefix.length);
-  return name !== ".keep" && name.length > 0 && !name.includes("/");
+  return name !== ".keep" && name !== BOOK_METADATA_KEY && name.length > 0 && !name.includes("/");
 }
 
 function folderName(prefix: string, folderPrefix: string): string {

@@ -1,0 +1,16 @@
+{
+  "books": {
+    "Dune.epub": {
+      "title": "Dune",
+      "author": "Frank Herbert",
+      "description": "A desert planet, a noble family, and a fight over the most valuable resource in the universe.",
+      "coverUrl": "https://example.com/covers/dune.jpg"
+    },
+    "Fantasy/The Hobbit.pdf": {
+      "title": "The Hobbit",
+      "author": "J. R. R. Tolkien",
+      "description": "Bilbo Baggins joins a company of dwarves on a quest to reclaim a mountain home.",
+      "coverKey": "covers/the-hobbit.jpg"
+    }
+  }
+}

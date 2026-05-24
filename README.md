@@ -13,6 +13,7 @@ download objects, and delete objects from a web UI.
 - Open and download links for objects
 - Optional delete support
 - Optional named users with Cloudflare Worker secrets
+- Optional book covers, titles, authors, and descriptions from an R2 JSON file
 
 ## Requirements
 
@@ -45,7 +46,7 @@ binding = "BUCKET"
 bucket_name = "your-r2-bucket-name"
 
 [vars]
-EXPLORER_TITLE = "Book Vault
+EXPLORER_TITLE = "Book Vault"
 ALLOW_UPLOADS = "true"
 ALLOW_DELETES = "true"
 ```
@@ -137,6 +138,50 @@ behavior:
 ALLOW_UPLOADS = "false"
 ALLOW_DELETES = "false"
 ```
+
+## Book covers and descriptions
+
+To show book covers and descriptions, upload a JSON file named
+`_book-metadata.json` to the root of the R2 bucket. The explorer hides this file
+from the normal file list and uses it to decorate matching book files.
+
+Use the exact R2 object key for each book. If a book is inside a folder, include
+the folder path in the key:
+
+```json
+{
+  "books": {
+    "Dune.epub": {
+      "title": "Dune",
+      "author": "Frank Herbert",
+      "description": "A desert planet, a noble family, and a fight over the most valuable resource in the universe.",
+      "coverUrl": "https://example.com/covers/dune.jpg"
+    },
+    "Fantasy/The Hobbit.pdf": {
+      "title": "The Hobbit",
+      "author": "J. R. R. Tolkien",
+      "description": "Bilbo Baggins joins a company of dwarves on a quest to reclaim a mountain home.",
+      "coverKey": "covers/the-hobbit.jpg"
+    }
+  }
+}
+```
+
+Cover options:
+
+- `coverUrl` points to an image hosted anywhere on the web.
+- `coverKey` points to an image stored in the same R2 bucket. The explorer serves
+  it through the existing authenticated `/api/object` route.
+
+Supported optional fields for each book:
+
+- `title`
+- `author`
+- `description`
+- `coverUrl`
+- `coverKey`
+
+After changing `_book-metadata.json`, refresh the explorer page.
 
 ## Local development
 
