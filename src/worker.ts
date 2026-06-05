@@ -36,7 +36,8 @@ interface AuthUser {
   token: string;
 }
 
-const COOKIE_NAME = "r2_drive_token";
+const LEGACY_COOKIE_NAME = "r2_drive_token";
+const SESSION_COOKIE_NAME = "r2_drive_session";
 const FAVICON_URL = "https://www.freeiconspng.com/download/138";
 const LOGO_URL = "https://www.pngmart.com/files/22/Snorlax-Pokemon-PNG.gif";
 const BOOK_METADATA_KEY = "_book-metadata.json";
@@ -1585,7 +1586,7 @@ function getCurrentUser(request: Request, env: Env): AuthUser | null {
   }
 
   const cookies = parseCookies(request.headers.get("cookie") ?? "");
-  const cookieUser = parseAuthCookie(cookies[COOKIE_NAME]);
+  const cookieUser = parseAuthCookie(cookies[SESSION_COOKIE_NAME] ?? cookies[LEGACY_COOKIE_NAME]);
   return cookieUser ? authenticateUser(users, cookieUser.username, cookieUser.token) : null;
 }
 
@@ -1607,7 +1608,7 @@ function parseCookies(header: string): Record<string, string> {
   for (const part of header.split(";")) {
     const [name, ...valueParts] = part.trim().split("=");
     if (!name) continue;
-    cookies[name] = decodeURIComponent(valueParts.join("="));
+    cookies[name] = safeDecodeURIComponent(valueParts.join("="));
   }
   return cookies;
 }
@@ -1615,23 +1616,28 @@ function parseCookies(header: string): Record<string, string> {
 function authCookie(user: AuthUser, url: URL): string {
   const secure = url.protocol === "https:" ? "; Secure" : "";
   const value = encodeURIComponent(JSON.stringify({ token: user.token, username: user.username }));
-  return `${COOKIE_NAME}=${value}; HttpOnly; SameSite=Lax; Path=/; Max-Age=2592000${secure}`;
+  return `${SESSION_COOKIE_NAME}=${value}; HttpOnly; SameSite=Lax; Path=/; Max-Age=2592000${secure}`;
 }
 
-function clearAuthCookie(url: URL): string {
+function clearAuthCookie(url: URL): string[] {
   const secure = url.protocol === "https:" ? "; Secure" : "";
-  return `${COOKIE_NAME}=; HttpOnly; SameSite=Lax; Path=/; Max-Age=0${secure}`;
+  return [
+    `${SESSION_COOKIE_NAME}=; HttpOnly; SameSite=Lax; Path=/; Max-Age=0${secure}`,
+    `${LEGACY_COOKIE_NAME}=; HttpOnly; SameSite=Lax; Path=/; Max-Age=0${secure}`,
+  ];
 }
 
-function redirectWithCookie(location: string, cookie: string): Response {
-  return new Response(null, {
-    headers: {
-      "cache-control": "no-store",
-      location,
-      "set-cookie": cookie,
-    },
-    status: 302,
+function redirectWithCookie(location: string, cookie: string | string[]): Response {
+  const headers = new Headers({
+    "cache-control": "no-store",
+    location,
   });
+
+  for (const value of Array.isArray(cookie) ? cookie : [cookie]) {
+    headers.append("set-cookie", value);
+  }
+
+  return new Response(null, { headers, status: 303 });
 }
 
 function redirectNoStore(location: string): Response {
@@ -1670,6 +1676,14 @@ function parseAuthCookie(value: string | undefined): AuthUser | null {
 function safeNextPath(value: string): string {
   if (!value.startsWith("/") || value.startsWith("//")) return "/files";
   return value;
+}
+
+function safeDecodeURIComponent(value: string): string {
+  try {
+    return decodeURIComponent(value);
+  } catch {
+    return value;
+  }
 }
 
 function escapeHtml(value: string): string {
