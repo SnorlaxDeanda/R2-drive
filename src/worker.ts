@@ -277,7 +277,7 @@ async function handleLogin(request: Request, env: Env, url: URL): Promise<Respon
 
   const form = await request.formData();
   const username = String(form.get("username") ?? "");
-  const token = String(form.get("token") ?? "");
+  const token = String(form.get("token") ?? "").trim();
   const next = safeNextPath(String(form.get("next") ?? "/files"));
   const user = authenticateUser(users, username, token);
 
@@ -1344,6 +1344,7 @@ function json(data: unknown, status = 200): Response {
 function html(markup: string, status = 200): Response {
   return new Response(markup, {
     headers: {
+      "cache-control": "no-store",
       "content-type": "text/html; charset=utf-8",
     },
     status,
@@ -1479,7 +1480,7 @@ function getAuthUsers(env: Env): AuthUser[] {
     users.push({
       canDelete: isEnabled(env.ALLOW_DELETES, true),
       username: "default",
-      token: env.AUTH_TOKEN,
+      token: env.AUTH_TOKEN.trim(),
     });
   }
 
@@ -1505,7 +1506,7 @@ function parseAuthUsers(value: string): AuthUser[] {
         return {
           canDelete: false,
           username: pair.slice(0, separator).trim(),
-          token: pair.slice(separator + 1),
+          token: pair.slice(separator + 1).trim(),
         };
       });
     }
@@ -1519,7 +1520,7 @@ function parseAuthUser(username: string, value: unknown): AuthUser | null {
     return {
       canDelete: false,
       username: username.trim(),
-      token: value,
+      token: value.trim(),
     };
   }
 
@@ -1535,18 +1536,19 @@ function parseAuthUser(username: string, value: unknown): AuthUser | null {
   return {
     canDelete: config.canDelete === true,
     username: username.trim(),
-    token: config.token,
+    token: config.token.trim(),
   };
 }
 
 function authenticateUser(users: AuthUser[], username: string, token: string): AuthUser | null {
   const cleanUsername = username.trim();
-  if (!token) return null;
+  const cleanToken = token.trim();
+  if (!cleanToken) return null;
 
   return (
     users.find((user) => {
       const usernameMatches = cleanUsername ? user.username === cleanUsername : users.length === 1;
-      return usernameMatches && user.token === token;
+      return usernameMatches && user.token === cleanToken;
     }) ?? null
   );
 }
@@ -1577,7 +1579,7 @@ function getCurrentUser(request: Request, env: Env): AuthUser | null {
 
   const authorization = request.headers.get("authorization");
   if (authorization?.startsWith("Bearer ")) {
-    const token = authorization.slice("Bearer ".length);
+    const token = authorization.slice("Bearer ".length).trim();
     const user = users.find((candidate) => candidate.token === token);
     if (user) return user;
   }
@@ -1594,7 +1596,7 @@ function unauthorizedResponse(request: Request, url: URL): Response {
 
   const next = encodeURIComponent(url.pathname + url.search);
   if (request.method === "GET") {
-    return Response.redirect(`${url.origin}/login?next=${next}`, 302);
+    return redirectNoStore(`${url.origin}/login?next=${next}`);
   }
 
   return json({ error: "Authentication required" }, 401);
@@ -1624,8 +1626,19 @@ function clearAuthCookie(url: URL): string {
 function redirectWithCookie(location: string, cookie: string): Response {
   return new Response(null, {
     headers: {
+      "cache-control": "no-store",
       location,
       "set-cookie": cookie,
+    },
+    status: 302,
+  });
+}
+
+function redirectNoStore(location: string): Response {
+  return new Response(null, {
+    headers: {
+      "cache-control": "no-store",
+      location,
     },
     status: 302,
   });
