@@ -57,14 +57,14 @@ If you deploy as a Cloudflare **Worker Custom Domain**, use just the hostname:
 
 ```toml
 [[routes]]
-pattern = "jdeanda.com"
+pattern = "files.example.com"
 custom_domain = true
 ```
 
 Do not use this for a custom domain:
 
 ```toml
-{ pattern = "jdeanda.com/*", custom_domain = true }
+{ pattern = "files.example.com/*", custom_domain = true }
 ```
 
 That line is invalid by itself, and `custom_domain = true` should not include
@@ -74,8 +74,8 @@ If you instead want a normal zone route, use this format:
 
 ```toml
 [[routes]]
-pattern = "jdeanda.com/*"
-zone_name = "jdeanda.com"
+pattern = "files.example.com/*"
+zone_name = "example.com"
 ```
 
 ### Optional users
