@@ -8,6 +8,7 @@ interface Env {
 }
 
 interface FileEntry {
+  book?: BookInfo;
   key: string;
   name: string;
   size: number;
@@ -21,15 +22,25 @@ interface FolderEntry {
   prefix: string;
 }
 
+interface BookInfo {
+  author?: string;
+  coverKey?: string;
+  coverUrl?: string;
+  description?: string;
+  title?: string;
+}
+
 interface AuthUser {
   canDelete: boolean;
   username: string;
   token: string;
 }
 
-const COOKIE_NAME = "r2_drive_token";
+const LEGACY_COOKIE_NAME = "r2_drive_token";
+const SESSION_COOKIE_NAME = "r2_drive_session";
 const FAVICON_URL = "https://www.freeiconspng.com/download/138";
 const LOGO_URL = "https://www.pngmart.com/files/22/Snorlax-Pokemon-PNG.gif";
+const BOOK_METADATA_KEY = "_book-metadata.json";
 
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
@@ -96,6 +107,7 @@ async function listObjects(request: Request, env: Env): Promise<Response> {
   const url = new URL(request.url);
   const prefix = normalizePrefix(url.searchParams.get("prefix"));
   const cursor = url.searchParams.get("cursor") || undefined;
+  const bookMetadata = await getBookMetadata(env);
   const listed = await env.BUCKET.list({
     cursor,
     delimiter: "/",
@@ -113,14 +125,19 @@ async function listObjects(request: Request, env: Env): Promise<Response> {
   const files: FileEntry[] = listed.objects
     .filter((object) => shouldShowObject(object.key, prefix))
     .sort((left, right) => left.key.localeCompare(right.key))
-    .map((object) => ({
-      key: object.key,
-      name: object.key.slice(prefix.length),
-      size: object.size,
-      uploaded: object.uploaded.toISOString(),
-      contentType: object.httpMetadata?.contentType,
-      etag: object.httpEtag,
-    }));
+    .map((object) => {
+      const name = object.key.slice(prefix.length);
+
+      return {
+        book: findBookInfo(bookMetadata, object.key, name),
+        key: object.key,
+        name,
+        size: object.size,
+        uploaded: object.uploaded.toISOString(),
+        contentType: object.httpMetadata?.contentType,
+        etag: object.httpEtag,
+      };
+    });
 
   return json({
     cursor: listed.truncated ? listed.cursor : null,
@@ -261,7 +278,7 @@ async function handleLogin(request: Request, env: Env, url: URL): Promise<Respon
 
   const form = await request.formData();
   const username = String(form.get("username") ?? "");
-  const token = String(form.get("token") ?? "");
+  const token = String(form.get("token") ?? "").trim();
   const next = safeNextPath(String(form.get("next") ?? "/files"));
   const user = authenticateUser(users, username, token);
 
@@ -492,6 +509,58 @@ function renderExplorer(request: Request, env: Env): string {
       gap: 10px;
       min-width: 280px;
     }
+    .book-cell {
+      align-items: flex-start;
+      display: flex;
+      gap: 14px;
+      min-width: 340px;
+    }
+    .book-cover {
+      align-items: center;
+      background: #f4edf7;
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      color: var(--muted);
+      display: flex;
+      flex: 0 0 58px;
+      font-size: 11px;
+      font-weight: 700;
+      height: 82px;
+      justify-content: center;
+      overflow: hidden;
+      text-align: center;
+      text-transform: uppercase;
+      width: 58px;
+    }
+    .book-cover img {
+      display: block;
+      height: 100%;
+      object-fit: cover;
+      width: 100%;
+    }
+    .book-details {
+      min-width: 0;
+    }
+    .book-title {
+      color: var(--text);
+      font-weight: 800;
+      overflow-wrap: anywhere;
+    }
+    .book-author,
+    .book-filename {
+      color: var(--muted);
+      font-size: 13px;
+      margin-top: 2px;
+      overflow-wrap: anywhere;
+    }
+    .book-description {
+      color: #38445a;
+      font-size: 13px;
+      line-height: 1.4;
+      margin-top: 6px;
+      max-width: 42rem;
+      overflow-wrap: anywhere;
+    }
     .icon {
       align-items: center;
       border-radius: 10px;
@@ -658,6 +727,15 @@ function renderExplorer(request: Request, env: Env): string {
       .name-cell {
         min-width: 0;
         width: 100%;
+      }
+      .book-cell {
+        min-width: 0;
+        width: 100%;
+      }
+      .book-cover {
+        flex-basis: 52px;
+        height: 74px;
+        width: 52px;
       }
       .name-cell span:last-child {
         overflow-wrap: anywhere;
@@ -875,7 +953,7 @@ function renderExplorer(request: Request, env: Env): string {
     function fileRow(file) {
       const row = document.createElement("tr");
       row.className = "file";
-      row.appendChild(nameCell("file", file.name));
+      row.appendChild(file.book ? bookCell(file) : nameCell("file", file.name));
       row.appendChild(textCell(formatDate(file.uploaded), "Last modified"));
       row.appendChild(textCell(formatSize(file.size), "Size"));
       row.appendChild(textCell(file.contentType || "Object", "Type"));
@@ -911,6 +989,67 @@ function renderExplorer(request: Request, env: Env): string {
       actions.appendChild(actionWrap);
       row.appendChild(actions);
       return row;
+    }
+
+    function bookCell(file) {
+      const book = file.book || {};
+      const title = book.title || file.name;
+      const coverSrc = bookCoverUrl(book);
+      const cell = document.createElement("td");
+      cell.dataset.label = "Book";
+
+      const wrap = document.createElement("div");
+      wrap.className = "book-cell";
+
+      const cover = document.createElement("div");
+      cover.className = "book-cover";
+
+      if (coverSrc) {
+        const image = document.createElement("img");
+        image.src = coverSrc;
+        image.alt = "";
+        image.loading = "lazy";
+        image.addEventListener("error", () => {
+          image.remove();
+          cover.textContent = "No cover";
+        });
+        cover.appendChild(image);
+      } else {
+        cover.textContent = "No cover";
+      }
+
+      const details = document.createElement("div");
+      details.className = "book-details";
+
+      const titleEl = document.createElement("div");
+      titleEl.className = "book-title";
+      titleEl.textContent = title;
+      details.appendChild(titleEl);
+
+      if (book.author) {
+        const author = document.createElement("div");
+        author.className = "book-author";
+        author.textContent = "by " + book.author;
+        details.appendChild(author);
+      }
+
+      if (title !== file.name) {
+        const filename = document.createElement("div");
+        filename.className = "book-filename";
+        filename.textContent = file.name;
+        details.appendChild(filename);
+      }
+
+      if (book.description) {
+        const description = document.createElement("div");
+        description.className = "book-description";
+        description.textContent = book.description;
+        details.appendChild(description);
+      }
+
+      wrap.append(cover, details);
+      cell.appendChild(wrap);
+      return cell;
     }
 
     function nameCell(kind, name) {
@@ -1066,6 +1205,12 @@ function renderExplorer(request: Request, env: Env): string {
       return "/api/object?" + params.toString();
     }
 
+    function bookCoverUrl(book) {
+      if (book.coverUrl) return book.coverUrl;
+      if (book.coverKey) return objectUrl(book.coverKey);
+      return "";
+    }
+
     function formatSize(bytes) {
       if (bytes === 0) return "0 Bytes";
       const units = ["Bytes", "KB", "MB", "GB", "TB"];
@@ -1200,6 +1345,7 @@ function json(data: unknown, status = 200): Response {
 function html(markup: string, status = 200): Response {
   return new Response(markup, {
     headers: {
+      "cache-control": "no-store",
       "content-type": "text/html; charset=utf-8",
     },
     status,
@@ -1237,10 +1383,70 @@ function normalizeFolderName(value: string): string {
   return normalized;
 }
 
+async function getBookMetadata(env: Env): Promise<Map<string, BookInfo>> {
+  const object = await env.BUCKET.get(BOOK_METADATA_KEY);
+  if (!object) return new Map();
+
+  try {
+    const parsed = JSON.parse(await object.text()) as unknown;
+    return parseBookMetadata(parsed);
+  } catch {
+    return new Map();
+  }
+}
+
+function parseBookMetadata(value: unknown): Map<string, BookInfo> {
+  const map = new Map<string, BookInfo>();
+  const source = unwrapBookMetadata(value);
+
+  if (!source || Array.isArray(source) || typeof source !== "object") {
+    return map;
+  }
+
+  for (const [key, metadata] of Object.entries(source)) {
+    const info = parseBookInfo(metadata);
+    if (key.trim() && info) {
+      map.set(key, info);
+    }
+  }
+
+  return map;
+}
+
+function unwrapBookMetadata(value: unknown): unknown {
+  if (!value || Array.isArray(value) || typeof value !== "object") {
+    return value;
+  }
+
+  const maybeWrapped = value as { books?: unknown };
+  return maybeWrapped.books ?? value;
+}
+
+function parseBookInfo(value: unknown): BookInfo | null {
+  if (!value || Array.isArray(value) || typeof value !== "object") {
+    return null;
+  }
+
+  const raw = value as Record<string, unknown>;
+  const info: BookInfo = {};
+
+  if (typeof raw.author === "string") info.author = raw.author;
+  if (typeof raw.coverKey === "string") info.coverKey = raw.coverKey;
+  if (typeof raw.coverUrl === "string") info.coverUrl = raw.coverUrl;
+  if (typeof raw.description === "string") info.description = raw.description;
+  if (typeof raw.title === "string") info.title = raw.title;
+
+  return Object.keys(info).length > 0 ? info : null;
+}
+
+function findBookInfo(metadata: Map<string, BookInfo>, key: string, name: string): BookInfo | undefined {
+  return metadata.get(key) ?? metadata.get(name);
+}
+
 function shouldShowObject(key: string, prefix: string): boolean {
   if (key === prefix || !key.startsWith(prefix)) return false;
   const name = key.slice(prefix.length);
-  return name !== ".keep" && name.length > 0 && !name.includes("/");
+  return name !== ".keep" && name !== BOOK_METADATA_KEY && name.length > 0 && !name.includes("/");
 }
 
 function folderName(prefix: string, folderPrefix: string): string {
@@ -1275,7 +1481,7 @@ function getAuthUsers(env: Env): AuthUser[] {
     users.push({
       canDelete: isEnabled(env.ALLOW_DELETES, true),
       username: "default",
-      token: env.AUTH_TOKEN,
+      token: env.AUTH_TOKEN.trim(),
     });
   }
 
@@ -1301,7 +1507,7 @@ function parseAuthUsers(value: string): AuthUser[] {
         return {
           canDelete: false,
           username: pair.slice(0, separator).trim(),
-          token: pair.slice(separator + 1),
+          token: pair.slice(separator + 1).trim(),
         };
       });
     }
@@ -1315,7 +1521,7 @@ function parseAuthUser(username: string, value: unknown): AuthUser | null {
     return {
       canDelete: false,
       username: username.trim(),
-      token: value,
+      token: value.trim(),
     };
   }
 
@@ -1331,18 +1537,19 @@ function parseAuthUser(username: string, value: unknown): AuthUser | null {
   return {
     canDelete: config.canDelete === true,
     username: username.trim(),
-    token: config.token,
+    token: config.token.trim(),
   };
 }
 
 function authenticateUser(users: AuthUser[], username: string, token: string): AuthUser | null {
   const cleanUsername = username.trim();
-  if (!token) return null;
+  const cleanToken = token.trim();
+  if (!cleanToken) return null;
 
   return (
     users.find((user) => {
       const usernameMatches = cleanUsername ? user.username === cleanUsername : users.length === 1;
-      return usernameMatches && user.token === token;
+      return usernameMatches && user.token === cleanToken;
     }) ?? null
   );
 }
@@ -1373,13 +1580,13 @@ function getCurrentUser(request: Request, env: Env): AuthUser | null {
 
   const authorization = request.headers.get("authorization");
   if (authorization?.startsWith("Bearer ")) {
-    const token = authorization.slice("Bearer ".length);
+    const token = authorization.slice("Bearer ".length).trim();
     const user = users.find((candidate) => candidate.token === token);
     if (user) return user;
   }
 
   const cookies = parseCookies(request.headers.get("cookie") ?? "");
-  const cookieUser = parseAuthCookie(cookies[COOKIE_NAME]);
+  const cookieUser = parseAuthCookie(cookies[SESSION_COOKIE_NAME] ?? cookies[LEGACY_COOKIE_NAME]);
   return cookieUser ? authenticateUser(users, cookieUser.username, cookieUser.token) : null;
 }
 
@@ -1390,7 +1597,7 @@ function unauthorizedResponse(request: Request, url: URL): Response {
 
   const next = encodeURIComponent(url.pathname + url.search);
   if (request.method === "GET") {
-    return Response.redirect(`${url.origin}/login?next=${next}`, 302);
+    return redirectNoStore(`${url.origin}/login?next=${next}`);
   }
 
   return json({ error: "Authentication required" }, 401);
@@ -1401,7 +1608,7 @@ function parseCookies(header: string): Record<string, string> {
   for (const part of header.split(";")) {
     const [name, ...valueParts] = part.trim().split("=");
     if (!name) continue;
-    cookies[name] = decodeURIComponent(valueParts.join("="));
+    cookies[name] = safeDecodeURIComponent(valueParts.join("="));
   }
   return cookies;
 }
@@ -1409,19 +1616,35 @@ function parseCookies(header: string): Record<string, string> {
 function authCookie(user: AuthUser, url: URL): string {
   const secure = url.protocol === "https:" ? "; Secure" : "";
   const value = encodeURIComponent(JSON.stringify({ token: user.token, username: user.username }));
-  return `${COOKIE_NAME}=${value}; HttpOnly; SameSite=Lax; Path=/; Max-Age=2592000${secure}`;
+  return `${SESSION_COOKIE_NAME}=${value}; HttpOnly; SameSite=Lax; Path=/; Max-Age=2592000${secure}`;
 }
 
-function clearAuthCookie(url: URL): string {
+function clearAuthCookie(url: URL): string[] {
   const secure = url.protocol === "https:" ? "; Secure" : "";
-  return `${COOKIE_NAME}=; HttpOnly; SameSite=Lax; Path=/; Max-Age=0${secure}`;
+  return [
+    `${SESSION_COOKIE_NAME}=; HttpOnly; SameSite=Lax; Path=/; Max-Age=0${secure}`,
+    `${LEGACY_COOKIE_NAME}=; HttpOnly; SameSite=Lax; Path=/; Max-Age=0${secure}`,
+  ];
 }
 
-function redirectWithCookie(location: string, cookie: string): Response {
+function redirectWithCookie(location: string, cookie: string | string[]): Response {
+  const headers = new Headers({
+    "cache-control": "no-store",
+    location,
+  });
+
+  for (const value of Array.isArray(cookie) ? cookie : [cookie]) {
+    headers.append("set-cookie", value);
+  }
+
+  return new Response(null, { headers, status: 303 });
+}
+
+function redirectNoStore(location: string): Response {
   return new Response(null, {
     headers: {
+      "cache-control": "no-store",
       location,
-      "set-cookie": cookie,
     },
     status: 302,
   });
@@ -1453,6 +1676,14 @@ function parseAuthCookie(value: string | undefined): AuthUser | null {
 function safeNextPath(value: string): string {
   if (!value.startsWith("/") || value.startsWith("//")) return "/files";
   return value;
+}
+
+function safeDecodeURIComponent(value: string): string {
+  try {
+    return decodeURIComponent(value);
+  } catch {
+    return value;
+  }
 }
 
 function escapeHtml(value: string): string {
