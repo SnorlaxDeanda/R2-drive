@@ -1315,7 +1315,7 @@ function renderLogin(url: URL, users: AuthUser[], error = ""): string {
 <body>
   <form method="post" action="/login">
     <h1>Sign in</h1>
-    <p>${showUsername ? "Enter your username and access token." : "Enter the token configured for this R2 explorer."}</p>
+    <p>${showUsername ? "Enter your username and password." : "Enter the password configured for this R2 explorer."}</p>
     ${error ? `<div class="error">${escapeHtml(error)}</div>` : ""}
     <input name="next" type="hidden" value="${escapeHtml(next)}">
     ${
@@ -1324,7 +1324,7 @@ function renderLogin(url: URL, users: AuthUser[], error = ""): string {
     <input autocomplete="username" autofocus id="username" name="username" required type="text">`
         : ""
     }
-    <label for="token">Access token</label>
+    <label for="token">Password</label>
     <input autocomplete="current-password" ${showUsername ? "" : "autofocus"} id="token" name="token" required type="password">
     <button type="submit">Open explorer</button>
   </form>
