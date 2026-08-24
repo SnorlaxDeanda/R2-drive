@@ -75,6 +75,10 @@ export default {
         return listObjects(request, env);
       }
 
+      if (url.pathname === "/api/search" && request.method === "GET") {
+        return searchObjects(request, env);
+      }
+
       if (url.pathname === "/api/object" && request.method === "GET") {
         return getObject(request, env);
       }
@@ -145,6 +149,70 @@ async function listObjects(request: Request, env: Env): Promise<Response> {
     folders,
     prefix,
     truncated: listed.truncated,
+  });
+}
+
+async function searchObjects(request: Request, env: Env): Promise<Response> {
+  const url = new URL(request.url);
+  const query = (url.searchParams.get("q") ?? "").trim().toLowerCase();
+  const prefix = normalizePrefix(url.searchParams.get("prefix"));
+
+  if (!query) {
+    return json({ cursor: null, files: [], query: "", truncated: false });
+  }
+
+  const bookMetadata = await getBookMetadata(env);
+  const matches: FileEntry[] = [];
+  const maxMatches = 200;
+  const maxPages = 20;
+
+  let cursor = url.searchParams.get("cursor") || undefined;
+  let nextCursor: string | null = null;
+  let truncated = false;
+  let pages = 0;
+
+  while (true) {
+    const listed = await env.BUCKET.list({ cursor, limit: 1000, prefix });
+    pages += 1;
+
+    for (const object of listed.objects) {
+      if (!isSearchableKey(object.key)) continue;
+
+      const name = basename(object.key);
+      const book = findBookInfo(bookMetadata, object.key, name);
+      const haystack = `${object.key}\n${book?.title ?? ""}\n${book?.author ?? ""}`.toLowerCase();
+      if (!haystack.includes(query)) continue;
+
+      matches.push({
+        book,
+        key: object.key,
+        name: object.key,
+        size: object.size,
+        uploaded: object.uploaded.toISOString(),
+        contentType: object.httpMetadata?.contentType,
+        etag: object.httpEtag,
+      });
+    }
+
+    if (!listed.truncated) {
+      nextCursor = null;
+      break;
+    }
+
+    cursor = listed.cursor;
+
+    if (matches.length >= maxMatches || pages >= maxPages) {
+      nextCursor = listed.cursor;
+      truncated = true;
+      break;
+    }
+  }
+
+  return json({
+    cursor: nextCursor,
+    files: matches,
+    query,
+    truncated,
   });
 }
 
@@ -454,6 +522,31 @@ function renderExplorer(request: Request, env: Env): string {
       min-height: 22px;
       text-align: right;
     }
+    .search {
+      align-items: center;
+      display: flex;
+      flex: 1 1 260px;
+      gap: 8px;
+      max-width: 420px;
+      min-width: 180px;
+    }
+    .search-input {
+      background: #ffffff;
+      border: 1px solid #cfd8e5;
+      border-radius: 12px;
+      color: var(--text);
+      min-height: 40px;
+      padding: 9px 12px;
+      width: 100%;
+    }
+    .search-input::placeholder {
+      color: var(--muted);
+    }
+    .search-input:focus {
+      border-color: #b01aa8;
+      outline: 2px solid rgba(176, 26, 168, 0.35);
+      outline-offset: 1px;
+    }
     .dropzone {
       align-items: center;
       background: #ffffff;
@@ -620,6 +713,10 @@ function renderExplorer(request: Request, env: Env): string {
       .status {
         justify-content: flex-start;
         text-align: left;
+      }
+      .search {
+        max-width: none;
+        width: 100%;
       }
       .shell {
         padding: 22px 12px 36px;
@@ -808,6 +905,10 @@ function renderExplorer(request: Request, env: Env): string {
     <section class="card" aria-live="polite">
       <div class="toolbar">
         <nav class="breadcrumbs" id="breadcrumbs" aria-label="Current folder"></nav>
+        <div class="search">
+          <input class="search-input" id="searchInput" type="search" placeholder="Search books and files..." autocomplete="off" spellcheck="false" aria-label="Search files and folders">
+          <button class="link-button hidden" id="clearSearch" type="button">Clear</button>
+        </div>
         <div class="status" id="status"></div>
       </div>
       <div class="dropzone" id="dropzone">Drop files here to upload to the current folder.</div>
@@ -838,7 +939,9 @@ function renderExplorer(request: Request, env: Env): string {
     const state = {
       cursor: null,
       loading: false,
-      prefix: prefixFromLocation()
+      mode: "browse",
+      prefix: prefixFromLocation(),
+      query: ""
     };
 
     const entries = document.querySelector("#entries");
@@ -852,6 +955,9 @@ function renderExplorer(request: Request, env: Env): string {
     const refreshButton = document.querySelector("#refreshButton");
     const fileInput = document.querySelector("#fileInput");
     const dropzone = document.querySelector("#dropzone");
+    const searchInput = document.querySelector("#searchInput");
+    const clearSearchButton = document.querySelector("#clearSearch");
+    let searchDebounce = null;
 
     if (!appConfig.allowUploads) {
       uploadButton.classList.add("hidden");
@@ -864,14 +970,48 @@ function renderExplorer(request: Request, env: Env): string {
     }
 
     window.addEventListener("popstate", () => {
+      if (state.mode === "search") resetSearchUi();
       state.prefix = prefixFromLocation();
       loadList();
     });
 
-    refreshButton.addEventListener("click", () => loadList());
-    loadMoreButton.addEventListener("click", () => loadList({ append: true }));
+    refreshButton.addEventListener("click", () => {
+      if (state.mode === "search") performSearch();
+      else loadList();
+    });
+    loadMoreButton.addEventListener("click", () => {
+      if (state.mode === "search") performSearch({ append: true });
+      else loadList({ append: true });
+    });
     uploadButton.addEventListener("click", () => fileInput.click());
     newFolderButton.addEventListener("click", createFolder);
+
+    searchInput.addEventListener("input", () => {
+      const value = searchInput.value.trim();
+      clearSearchButton.classList.toggle("hidden", value.length === 0);
+      clearTimeout(searchDebounce);
+      searchDebounce = setTimeout(() => {
+        if (value) {
+          startSearch(value);
+        } else {
+          exitSearch();
+        }
+      }, 250);
+    });
+
+    searchInput.addEventListener("keydown", (event) => {
+      if (event.key === "Enter") {
+        event.preventDefault();
+        clearTimeout(searchDebounce);
+        const value = searchInput.value.trim();
+        if (value) startSearch(value);
+        else exitSearch();
+      } else if (event.key === "Escape") {
+        exitSearch();
+      }
+    });
+
+    clearSearchButton.addEventListener("click", () => exitSearch());
     fileInput.addEventListener("change", () => {
       uploadFiles(Array.from(fileInput.files || []));
       fileInput.value = "";
@@ -917,6 +1057,81 @@ function renderExplorer(request: Request, env: Env): string {
       } finally {
         state.loading = false;
       }
+    }
+
+    function resetSearchUi() {
+      state.mode = "browse";
+      state.query = "";
+      searchInput.value = "";
+      clearSearchButton.classList.add("hidden");
+      if (appConfig.allowUploads) dropzone.classList.remove("hidden");
+      emptyState.textContent = "This folder is empty.";
+    }
+
+    function startSearch(value) {
+      state.mode = "search";
+      state.query = value;
+      state.cursor = null;
+      if (appConfig.allowUploads) dropzone.classList.add("hidden");
+      performSearch();
+    }
+
+    function exitSearch() {
+      clearTimeout(searchDebounce);
+      const wasSearching = state.mode === "search";
+      resetSearchUi();
+      state.cursor = null;
+      if (wasSearching) loadList();
+    }
+
+    async function performSearch(options = {}) {
+      if (state.loading) return;
+      if (!state.query) {
+        exitSearch();
+        return;
+      }
+
+      state.loading = true;
+      setStatus(options.append ? "Loading more results..." : "Searching...");
+
+      try {
+        const params = new URLSearchParams({ q: state.query });
+        if (options.append && state.cursor) params.set("cursor", state.cursor);
+        const data = await api("/api/search?" + params.toString());
+
+        state.cursor = data.cursor;
+        renderSearchBreadcrumbs();
+
+        if (!options.append) entries.replaceChildren();
+        for (const file of data.files) entries.appendChild(fileRow(file));
+
+        emptyState.textContent = "No files match your search.";
+        emptyState.classList.toggle("hidden", entries.children.length > 0);
+        loadMoreWrap.classList.toggle("hidden", !data.truncated);
+
+        const count = entries.children.length;
+        const noun = count === 1 ? "match" : "matches";
+        setStatus(data.truncated
+          ? count + " " + noun + " so far - load more to keep searching."
+          : count + " " + noun + " for " + state.query + ".");
+      } catch (error) {
+        setStatus(error.message || "Search failed.");
+      } finally {
+        state.loading = false;
+      }
+    }
+
+    function renderSearchBreadcrumbs() {
+      breadcrumbs.replaceChildren();
+      breadcrumbs.appendChild(crumbButton(appConfig.title, ""));
+      const separator = document.createElement("span");
+      separator.className = "separator";
+      separator.textContent = "/";
+      breadcrumbs.appendChild(separator);
+      const label = document.createElement("span");
+      label.className = "crumb";
+      label.textContent = "Search: " + state.query;
+      breadcrumbs.appendChild(label);
     }
 
     function renderEntries(data, append) {
@@ -1162,7 +1377,9 @@ function renderExplorer(request: Request, env: Env): string {
     }
 
     function navigate(prefix) {
+      if (state.mode === "search") resetSearchUi();
       state.prefix = prefix;
+      state.cursor = null;
       history.pushState({}, "", pathForPrefix(prefix));
       loadList();
     }
@@ -1441,6 +1658,11 @@ function parseBookInfo(value: unknown): BookInfo | null {
 
 function findBookInfo(metadata: Map<string, BookInfo>, key: string, name: string): BookInfo | undefined {
   return metadata.get(key) ?? metadata.get(name);
+}
+
+function isSearchableKey(key: string): boolean {
+  if (!key || key === BOOK_METADATA_KEY) return false;
+  return basename(key) !== ".keep";
 }
 
 function shouldShowObject(key: string, prefix: string): boolean {
