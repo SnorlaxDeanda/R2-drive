@@ -14,6 +14,7 @@ download objects, and delete objects from a web UI.
 - Optional delete support
 - Optional named users with Cloudflare Worker secrets
 - Optional book covers, titles, authors, and descriptions from an R2 JSON file
+- Admin-only download/open statistics by user and book
 
 ## Requirements
 
@@ -183,6 +184,44 @@ Supported optional fields for each book:
 
 After changing `_book-metadata.json`, refresh the explorer page.
 
+## Download statistics
+
+The explorer records lightweight analytics events when a signed-in user clicks
+`Open` or `Download` for a book/file. Stats are stored in the same R2 bucket as
+small JSON files under:
+
+```txt
+_analytics/downloads/
+```
+
+The `_analytics/` folder is hidden from normal browsing and search results.
+
+Users who can delete files (`canDelete: true`) can also view statistics from the
+`Stats` button in the explorer. The stats panel shows:
+
+- total tracked opens/downloads
+- top books/files
+- activity by user
+- recent open/download events
+
+Example user with stats access:
+
+```json
+{
+  "Joe": {
+    "token": "joe-password",
+    "canDelete": true
+  },
+  "Reader": "reader-password"
+}
+```
+
+In that example, `Joe` can delete files and view stats. `Reader` can use the
+library but cannot view stats.
+
+Cover images loaded through `coverKey` are not tracked as downloads. Browser
+range requests are also ignored to avoid inflated counts for previews.
+
 ## Local development
 
 Run the Worker locally:
@@ -215,6 +254,8 @@ The root path redirects to `/files`, which renders the explorer.
 The UI uses these same-origin routes:
 
 - `GET /api/list?prefix=<prefix>` lists folders and files.
+- `GET /api/search?q=<query>` searches files and book metadata.
+- `GET /api/stats` returns aggregated stats for admin/delete-capable users.
 - `GET /api/object?key=<key>` opens an object.
 - `GET /api/object?key=<key>&download=1` downloads an object.
 - `POST /api/upload` uploads multipart form files using `prefix` and `files`.

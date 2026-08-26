@@ -22,6 +22,37 @@ interface FolderEntry {
   prefix: string;
 }
 
+interface AccessEvent {
+  action: "download" | "open";
+  author?: string;
+  bookTitle?: string;
+  contentType?: string;
+  key: string;
+  size: number;
+  timestamp: string;
+  type: "object_access";
+  userAgent?: string;
+  username: string;
+}
+
+interface StatsBucket {
+  downloads: number;
+  opens: number;
+  total: number;
+}
+
+interface BookStats extends StatsBucket {
+  author?: string;
+  key: string;
+  title: string;
+  users: Record<string, number>;
+}
+
+interface UserStats extends StatsBucket {
+  books: Record<string, number>;
+  username: string;
+}
+
 interface BookInfo {
   author?: string;
   coverKey?: string;
@@ -41,9 +72,11 @@ const SESSION_COOKIE_NAME = "r2_drive_session";
 const FAVICON_URL = "https://www.freeiconspng.com/download/138";
 const LOGO_URL = "https://www.pngmart.com/files/22/Snorlax-Pokemon-PNG.gif";
 const BOOK_METADATA_KEY = "_book-metadata.json";
+const ANALYTICS_PREFIX = "_analytics/";
+const DOWNLOAD_EVENTS_PREFIX = `${ANALYTICS_PREFIX}downloads/`;
 
 export default {
-  async fetch(request: Request, env: Env): Promise<Response> {
+  async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
     const url = new URL(request.url);
 
     try {
@@ -79,8 +112,12 @@ export default {
         return searchObjects(request, env);
       }
 
+      if (url.pathname === "/api/stats" && request.method === "GET") {
+        return getStats(request, env);
+      }
+
       if (url.pathname === "/api/object" && request.method === "GET") {
-        return getObject(request, env);
+        return getObject(request, env, ctx);
       }
 
       if (url.pathname === "/api/upload" && request.method === "POST") {
@@ -120,6 +157,7 @@ async function listObjects(request: Request, env: Env): Promise<Response> {
   });
 
   const folders: FolderEntry[] = (listed.delimitedPrefixes ?? [])
+    .filter((folderPrefix) => !isInternalKey(folderPrefix))
     .sort((left, right) => left.localeCompare(right))
     .map((folderPrefix) => ({
       name: folderName(prefix, folderPrefix),
@@ -216,7 +254,7 @@ async function searchObjects(request: Request, env: Env): Promise<Response> {
   });
 }
 
-async function getObject(request: Request, env: Env): Promise<Response> {
+async function getObject(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
   const url = new URL(request.url);
   const key = normalizeKey(url.searchParams.get("key"));
   const object = await env.BUCKET.get(key, {
@@ -249,7 +287,22 @@ async function getObject(request: Request, env: Env): Promise<Response> {
     headers.set("content-disposition", `attachment; filename="${safeHeaderFilename(basename(key))}"`);
   }
 
+  if (url.searchParams.get("track") === "1" && !request.headers.has("range") && shouldTrackAccess(key)) {
+    const action = url.searchParams.get("download") === "1" ? "download" : "open";
+    ctx.waitUntil(recordAccessEvent(request, env, object, key, action).catch(() => undefined));
+  }
+
   return new Response(object.body, { headers, status });
+}
+
+async function getStats(request: Request, env: Env): Promise<Response> {
+  if (!canViewStats(request, env)) {
+    return json({ error: "Statistics are only available to administrators" }, 403);
+  }
+
+  const events = await readAccessEvents(env);
+  const stats = aggregateAccessEvents(events);
+  return json(stats);
 }
 
 async function uploadObjects(request: Request, env: Env): Promise<Response> {
@@ -362,6 +415,7 @@ function renderExplorer(request: Request, env: Env): string {
   const config = safeJson({
     allowDeletes: canDeleteObjects(request, env),
     allowUploads: isEnabled(env.ALLOW_UPLOADS, true),
+    canViewStats: canViewStats(request, env),
     title,
   });
 
@@ -699,6 +753,92 @@ function renderExplorer(request: Request, env: Env): string {
       padding: 16px 20px;
       text-align: center;
     }
+    .stats-panel {
+      margin-top: 20px;
+      padding: 20px;
+    }
+    .stats-header {
+      align-items: flex-start;
+      display: flex;
+      gap: 16px;
+      justify-content: space-between;
+      margin-bottom: 18px;
+    }
+    .stats-header h2,
+    .stats-section h3 {
+      margin: 0;
+    }
+    .stats-header p {
+      color: var(--muted);
+      margin: 4px 0 0;
+    }
+    .stats-grid {
+      display: grid;
+      gap: 12px;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      margin-bottom: 20px;
+    }
+    .metric-card,
+    .stats-list,
+    .recent-list {
+      background: #fbfcff;
+      border: 1px solid var(--line);
+      border-radius: 16px;
+    }
+    .metric-card {
+      padding: 14px;
+    }
+    .metric-value {
+      font-size: 28px;
+      font-weight: 800;
+      line-height: 1;
+    }
+    .metric-label {
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 700;
+      letter-spacing: 0.06em;
+      margin-top: 8px;
+      text-transform: uppercase;
+    }
+    .stats-columns {
+      display: grid;
+      gap: 16px;
+      grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+    }
+    .stats-section {
+      min-width: 0;
+    }
+    .stats-section h3 {
+      margin-bottom: 10px;
+    }
+    .stats-list,
+    .recent-list {
+      display: grid;
+      gap: 0;
+      overflow: hidden;
+    }
+    .stats-item {
+      border-bottom: 1px solid var(--line);
+      padding: 12px 14px;
+    }
+    .stats-item:last-child {
+      border-bottom: 0;
+    }
+    .stats-item-title {
+      font-weight: 800;
+      overflow-wrap: anywhere;
+    }
+    .stats-item-meta,
+    .stats-item-detail {
+      color: var(--muted);
+      font-size: 13px;
+      margin-top: 3px;
+      overflow-wrap: anywhere;
+    }
+    .recent-section {
+      margin-top: 18px;
+    }
     .load-more.hidden,
     .hidden {
       display: none;
@@ -713,6 +853,13 @@ function renderExplorer(request: Request, env: Env): string {
       .status {
         justify-content: flex-start;
         text-align: left;
+      }
+      .stats-header {
+        flex-direction: column;
+      }
+      .stats-grid,
+      .stats-columns {
+        grid-template-columns: 1fr;
       }
       .search {
         max-width: none;
@@ -895,6 +1042,7 @@ function renderExplorer(request: Request, env: Env): string {
         </div>
       </div>
       <div class="actions">
+        ${canViewStats(request, env) ? '<button class="button" id="statsButton" type="button">Stats</button>' : ""}
         <button class="button" id="refreshButton" type="button">Refresh</button>
         <button class="button" id="newFolderButton" type="button">New folder</button>
         <button class="button primary" id="uploadButton" type="button">Upload files</button>
@@ -931,6 +1079,35 @@ function renderExplorer(request: Request, env: Env): string {
         <button class="button" id="loadMoreButton" type="button">Load more</button>
       </div>
     </section>
+
+    ${
+      canViewStats(request, env)
+        ? `<section class="card stats-panel hidden" id="statsPanel" aria-live="polite">
+      <div class="stats-header">
+        <div>
+          <h2>Download statistics</h2>
+          <p id="statsSummaryText">See which users open or download books.</p>
+        </div>
+        <button class="button" id="closeStatsButton" type="button">Close stats</button>
+      </div>
+      <div class="stats-grid" id="statsMetrics"></div>
+      <div class="stats-columns">
+        <section class="stats-section">
+          <h3>Top books</h3>
+          <div class="stats-list" id="statsBooks"></div>
+        </section>
+        <section class="stats-section">
+          <h3>User activity</h3>
+          <div class="stats-list" id="statsUsers"></div>
+        </section>
+      </div>
+      <section class="stats-section recent-section">
+        <h3>Recent activity</h3>
+        <div class="recent-list" id="statsRecent"></div>
+      </section>
+    </section>`
+        : ""
+    }
   </main>
   <input class="hidden" id="fileInput" multiple type="file">
 
@@ -957,6 +1134,14 @@ function renderExplorer(request: Request, env: Env): string {
     const dropzone = document.querySelector("#dropzone");
     const searchInput = document.querySelector("#searchInput");
     const clearSearchButton = document.querySelector("#clearSearch");
+    const statsButton = document.querySelector("#statsButton");
+    const closeStatsButton = document.querySelector("#closeStatsButton");
+    const statsPanel = document.querySelector("#statsPanel");
+    const statsSummaryText = document.querySelector("#statsSummaryText");
+    const statsMetrics = document.querySelector("#statsMetrics");
+    const statsBooks = document.querySelector("#statsBooks");
+    const statsUsers = document.querySelector("#statsUsers");
+    const statsRecent = document.querySelector("#statsRecent");
     let searchDebounce = null;
 
     if (!appConfig.allowUploads) {
@@ -1012,6 +1197,8 @@ function renderExplorer(request: Request, env: Env): string {
     });
 
     clearSearchButton.addEventListener("click", () => exitSearch());
+    statsButton?.addEventListener("click", () => toggleStats());
+    closeStatsButton?.addEventListener("click", () => statsPanel?.classList.add("hidden"));
     fileInput.addEventListener("change", () => {
       uploadFiles(Array.from(fileInput.files || []));
       fileInput.value = "";
@@ -1134,6 +1321,138 @@ function renderExplorer(request: Request, env: Env): string {
       breadcrumbs.appendChild(label);
     }
 
+    async function toggleStats() {
+      if (!statsPanel) return;
+      const shouldOpen = statsPanel.classList.contains("hidden");
+      statsPanel.classList.toggle("hidden", !shouldOpen);
+      if (shouldOpen) await loadStats();
+    }
+
+    async function loadStats() {
+      if (!appConfig.canViewStats || !statsPanel) return;
+      statsSummaryText.textContent = "Loading statistics...";
+      statsMetrics.replaceChildren();
+      statsBooks.replaceChildren();
+      statsUsers.replaceChildren();
+      statsRecent.replaceChildren();
+
+      try {
+        const data = await api("/api/stats");
+        renderStats(data);
+      } catch (error) {
+        statsSummaryText.textContent = error.message || "Unable to load statistics.";
+      }
+    }
+
+    function renderStats(data) {
+      const totals = data.totals || {};
+      statsSummaryText.textContent = data.truncated
+        ? "Showing the latest stored sample of analytics events."
+        : "Updated " + formatDate(data.generatedAt) + ".";
+
+      renderMetric("Total events", totals.events || 0);
+      renderMetric("Downloads", totals.downloads || 0);
+      renderMetric("Opens", totals.opens || 0);
+      renderMetric("Users", totals.uniqueUsers || 0);
+
+      renderBookStats(data.byBook || []);
+      renderUserStats(data.byUser || []);
+      renderRecentStats(data.recent || []);
+    }
+
+    function renderMetric(label, value) {
+      const card = document.createElement("div");
+      card.className = "metric-card";
+      const valueEl = document.createElement("div");
+      valueEl.className = "metric-value";
+      valueEl.textContent = String(value);
+      const labelEl = document.createElement("div");
+      labelEl.className = "metric-label";
+      labelEl.textContent = label;
+      card.append(valueEl, labelEl);
+      statsMetrics.appendChild(card);
+    }
+
+    function renderBookStats(books) {
+      if (books.length === 0) {
+        renderEmptyStats(statsBooks, "No book activity has been recorded yet.");
+        return;
+      }
+
+      for (const book of books.slice(0, 10)) {
+        const item = statsItem(book.title || book.key, statsCountText(book));
+        const detail = document.createElement("div");
+        detail.className = "stats-item-detail";
+        detail.textContent = "Users: " + topEntries(book.users || {}).join(", ");
+        item.appendChild(detail);
+        statsBooks.appendChild(item);
+      }
+    }
+
+    function renderUserStats(users) {
+      if (users.length === 0) {
+        renderEmptyStats(statsUsers, "No user activity has been recorded yet.");
+        return;
+      }
+
+      for (const user of users.slice(0, 10)) {
+        const item = statsItem(user.username, statsCountText(user));
+        const detail = document.createElement("div");
+        detail.className = "stats-item-detail";
+        detail.textContent = "Books: " + topEntries(user.books || {}).join(", ");
+        item.appendChild(detail);
+        statsUsers.appendChild(item);
+      }
+    }
+
+    function renderRecentStats(events) {
+      if (events.length === 0) {
+        renderEmptyStats(statsRecent, "No recent activity has been recorded yet.");
+        return;
+      }
+
+      for (const event of events) {
+        const title = event.bookTitle || event.key;
+        const item = statsItem(
+          event.username + " " + event.action + "ed " + title,
+          formatDate(event.timestamp)
+        );
+        statsRecent.appendChild(item);
+      }
+    }
+
+    function renderEmptyStats(container, message) {
+      const item = document.createElement("div");
+      item.className = "stats-item muted";
+      item.textContent = message;
+      container.appendChild(item);
+    }
+
+    function statsItem(title, meta) {
+      const item = document.createElement("div");
+      item.className = "stats-item";
+      const titleEl = document.createElement("div");
+      titleEl.className = "stats-item-title";
+      titleEl.textContent = title;
+      const metaEl = document.createElement("div");
+      metaEl.className = "stats-item-meta";
+      metaEl.textContent = meta;
+      item.append(titleEl, metaEl);
+      return item;
+    }
+
+    function statsCountText(item) {
+      return item.total + " total - " + item.downloads + " downloads, " + item.opens + " opens";
+    }
+
+    function topEntries(values) {
+      const entries = Object.entries(values)
+        .sort((left, right) => right[1] - left[1])
+        .slice(0, 4)
+        .map(([name, count]) => name + " (" + count + ")");
+      return entries.length ? entries : ["none"];
+    }
+
     function renderEntries(data, append) {
       if (!append) entries.replaceChildren();
 
@@ -1180,7 +1499,7 @@ function renderExplorer(request: Request, env: Env): string {
 
       const openLink = document.createElement("a");
       openLink.className = "link-button";
-      openLink.href = objectUrl(file.key);
+      openLink.href = objectUrl(file.key, false, true);
       openLink.target = "_blank";
       openLink.rel = "noopener";
       openLink.textContent = "Open";
@@ -1188,7 +1507,7 @@ function renderExplorer(request: Request, env: Env): string {
 
       const downloadLink = document.createElement("a");
       downloadLink.className = "link-button";
-      downloadLink.href = objectUrl(file.key, true);
+      downloadLink.href = objectUrl(file.key, true, true);
       downloadLink.textContent = "Download";
       actionWrap.appendChild(downloadLink);
 
@@ -1416,9 +1735,10 @@ function renderExplorer(request: Request, env: Env): string {
       return parts.length === 0 ? "/files" : "/files/" + parts.join("/") + "/";
     }
 
-    function objectUrl(key, download = false) {
+    function objectUrl(key, download = false, track = false) {
       const params = new URLSearchParams({ key });
       if (download) params.set("download", "1");
+      if (track) params.set("track", "1");
       return "/api/object?" + params.toString();
     }
 
@@ -1569,7 +1889,7 @@ function html(markup: string, status = 200): Response {
   });
 }
 
-function normalizePrefix(value: string | null): string {
+function normalizePrefix(value: unknown): string {
   if (typeof value !== "string") return "";
   const withoutLeadingSlash = value.replace(/^\/+/, "");
   const compact = withoutLeadingSlash.replace(/\/{2,}/g, "/");
@@ -1660,15 +1980,192 @@ function findBookInfo(metadata: Map<string, BookInfo>, key: string, name: string
   return metadata.get(key) ?? metadata.get(name);
 }
 
+async function recordAccessEvent(
+  request: Request,
+  env: Env,
+  object: R2ObjectBody,
+  key: string,
+  action: AccessEvent["action"],
+): Promise<void> {
+  const user = getCurrentUser(request, env);
+  const bookMetadata = await getBookMetadata(env);
+  const book = findBookInfo(bookMetadata, key, basename(key));
+  const timestamp = new Date().toISOString();
+  const event: AccessEvent = {
+    action,
+    author: book?.author,
+    bookTitle: book?.title ?? basename(key),
+    contentType: object.httpMetadata?.contentType,
+    key,
+    size: object.size,
+    timestamp,
+    type: "object_access",
+    userAgent: truncate(request.headers.get("user-agent") ?? "", 160),
+    username: user?.username ?? "anonymous",
+  };
+
+  const eventKey = `${DOWNLOAD_EVENTS_PREFIX}${timestamp.slice(0, 10)}/${timestamp.replace(/[:.]/g, "-")}-${crypto.randomUUID()}.json`;
+  await env.BUCKET.put(eventKey, JSON.stringify(event), {
+    httpMetadata: {
+      contentType: "application/json",
+    },
+  });
+}
+
+async function readAccessEvents(env: Env): Promise<{ events: AccessEvent[]; truncated: boolean }> {
+  const events: AccessEvent[] = [];
+  const maxEvents = 5000;
+  let cursor: string | undefined;
+  let truncated = false;
+
+  while (events.length < maxEvents) {
+    const listed = await env.BUCKET.list({ cursor, limit: 1000, prefix: DOWNLOAD_EVENTS_PREFIX });
+
+    for (const object of listed.objects) {
+      const event = await readAccessEvent(env, object.key);
+      if (event) events.push(event);
+      if (events.length >= maxEvents) break;
+    }
+
+    if (!listed.truncated) break;
+    cursor = listed.cursor;
+  }
+
+  if (events.length >= maxEvents) truncated = true;
+  return { events, truncated };
+}
+
+async function readAccessEvent(env: Env, key: string): Promise<AccessEvent | null> {
+  try {
+    const object = await env.BUCKET.get(key);
+    if (!object) return null;
+    return parseAccessEvent(JSON.parse(await object.text()) as unknown);
+  } catch {
+    return null;
+  }
+}
+
+function parseAccessEvent(value: unknown): AccessEvent | null {
+  if (!value || Array.isArray(value) || typeof value !== "object") return null;
+
+  const raw = value as Record<string, unknown>;
+  if (raw.type !== "object_access") return null;
+  if (raw.action !== "download" && raw.action !== "open") return null;
+  if (typeof raw.key !== "string" || typeof raw.timestamp !== "string" || typeof raw.username !== "string") return null;
+
+  return {
+    action: raw.action,
+    author: typeof raw.author === "string" ? raw.author : undefined,
+    bookTitle: typeof raw.bookTitle === "string" ? raw.bookTitle : basename(raw.key),
+    contentType: typeof raw.contentType === "string" ? raw.contentType : undefined,
+    key: raw.key,
+    size: typeof raw.size === "number" ? raw.size : 0,
+    timestamp: raw.timestamp,
+    type: "object_access",
+    userAgent: typeof raw.userAgent === "string" ? raw.userAgent : undefined,
+    username: raw.username,
+  };
+}
+
+function aggregateAccessEvents(result: { events: AccessEvent[]; truncated: boolean }): unknown {
+  const byBook = new Map<string, BookStats>();
+  const byUser = new Map<string, UserStats>();
+  let downloads = 0;
+  let opens = 0;
+
+  for (const event of result.events) {
+    if (event.action === "download") downloads += 1;
+    else opens += 1;
+
+    const title = event.bookTitle || basename(event.key);
+    const userStats = getOrCreateUserStats(byUser, event.username);
+    incrementStatsBucket(userStats, event.action);
+    userStats.books[title] = (userStats.books[title] ?? 0) + 1;
+
+    const bookStats = getOrCreateBookStats(byBook, event.key, title, event.author);
+    incrementStatsBucket(bookStats, event.action);
+    bookStats.users[event.username] = (bookStats.users[event.username] ?? 0) + 1;
+  }
+
+  const recent = [...result.events]
+    .sort((left, right) => right.timestamp.localeCompare(left.timestamp))
+    .slice(0, 25);
+
+  return {
+    byBook: sortStats([...byBook.values()]),
+    byUser: sortStats([...byUser.values()]),
+    generatedAt: new Date().toISOString(),
+    recent,
+    totals: {
+      downloads,
+      events: result.events.length,
+      opens,
+      uniqueBooks: byBook.size,
+      uniqueUsers: byUser.size,
+    },
+    truncated: result.truncated,
+  };
+}
+
+function getOrCreateUserStats(map: Map<string, UserStats>, username: string): UserStats {
+  const existing = map.get(username);
+  if (existing) return existing;
+
+  const stats: UserStats = {
+    books: {},
+    downloads: 0,
+    opens: 0,
+    total: 0,
+    username,
+  };
+  map.set(username, stats);
+  return stats;
+}
+
+function getOrCreateBookStats(map: Map<string, BookStats>, key: string, title: string, author?: string): BookStats {
+  const existing = map.get(key);
+  if (existing) return existing;
+
+  const stats: BookStats = {
+    author,
+    downloads: 0,
+    key,
+    opens: 0,
+    title,
+    total: 0,
+    users: {},
+  };
+  map.set(key, stats);
+  return stats;
+}
+
+function incrementStatsBucket(stats: StatsBucket, action: AccessEvent["action"]): void {
+  stats.total += 1;
+  if (action === "download") stats.downloads += 1;
+  else stats.opens += 1;
+}
+
+function sortStats<T extends StatsBucket>(stats: T[]): T[] {
+  return stats.sort((left, right) => right.total - left.total);
+}
+
 function isSearchableKey(key: string): boolean {
-  if (!key || key === BOOK_METADATA_KEY) return false;
+  if (!key || isInternalKey(key)) return false;
   return basename(key) !== ".keep";
 }
 
 function shouldShowObject(key: string, prefix: string): boolean {
   if (key === prefix || !key.startsWith(prefix)) return false;
   const name = key.slice(prefix.length);
-  return name !== ".keep" && name !== BOOK_METADATA_KEY && name.length > 0 && !name.includes("/");
+  return name !== ".keep" && !isInternalKey(key) && name.length > 0 && !name.includes("/");
+}
+
+function shouldTrackAccess(key: string): boolean {
+  return isSearchableKey(key);
+}
+
+function isInternalKey(key: string): boolean {
+  return key === BOOK_METADATA_KEY || key.startsWith(ANALYTICS_PREFIX);
 }
 
 function folderName(prefix: string, folderPrefix: string): string {
@@ -1788,6 +2285,10 @@ function canDeleteObjects(request: Request, env: Env): boolean {
 
   const user = getCurrentUser(request, env);
   return Boolean(user?.canDelete);
+}
+
+function canViewStats(request: Request, env: Env): boolean {
+  return canDeleteObjects(request, env);
 }
 
 function getCurrentUser(request: Request, env: Env): AuthUser | null {
@@ -1931,6 +2432,11 @@ function safeJson(value: unknown): string {
 
 function safeHeaderFilename(value: string): string {
   return value.replace(/[\\"]/g, "_");
+}
+
+function truncate(value: string, maxLength: number): string | undefined {
+  if (!value) return undefined;
+  return value.length > maxLength ? value.slice(0, maxLength) : value;
 }
 
 function normalizeReturnedRange(range: NonNullable<R2ObjectBody["range"]>, size: number): { length: number; offset: number } {
