@@ -196,8 +196,9 @@ _analytics/downloads/
 
 The `_analytics/` folder is hidden from normal browsing and search results.
 
-Users who can delete files (`canDelete: true`) can also view statistics from the
-`Stats` button in the explorer. The stats panel shows:
+Users who can delete files (`canDelete: true`) can also view statistics by
+clicking the `Stats` button in the explorer. That opens the dedicated `/stats`
+page, which shows:
 
 - total tracked opens/downloads
 - top books/files

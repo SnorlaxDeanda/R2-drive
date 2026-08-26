@@ -104,6 +104,14 @@ export default {
         return Response.redirect(FAVICON_URL, 302);
       }
 
+      if (url.pathname === "/stats" && request.method === "GET") {
+        if (!canViewStats(request, env)) {
+          return html(renderStatsForbidden(env), 403);
+        }
+
+        return html(renderStatsPage(env), 200);
+      }
+
       if (url.pathname === "/api/list" && request.method === "GET") {
         return listObjects(request, env);
       }
@@ -415,7 +423,6 @@ function renderExplorer(request: Request, env: Env): string {
   const config = safeJson({
     allowDeletes: canDeleteObjects(request, env),
     allowUploads: isEnabled(env.ALLOW_UPLOADS, true),
-    canViewStats: canViewStats(request, env),
     title,
   });
 
@@ -1044,7 +1051,7 @@ function renderExplorer(request: Request, env: Env): string {
         </div>
       </div>
       <div class="actions">
-        ${canViewStats(request, env) ? '<button class="button" id="statsButton" type="button">Stats</button>' : ""}
+        ${canViewStats(request, env) ? '<a class="button" href="/stats">Stats</a>' : ""}
         <button class="button" id="refreshButton" type="button">Refresh</button>
         <button class="button" id="newFolderButton" type="button">New folder</button>
         <button class="button primary" id="uploadButton" type="button">Upload files</button>
@@ -1081,35 +1088,6 @@ function renderExplorer(request: Request, env: Env): string {
         <button class="button" id="loadMoreButton" type="button">Load more</button>
       </div>
     </section>
-
-    ${
-      canViewStats(request, env)
-        ? `<section class="card stats-panel hidden" id="statsPanel" aria-live="polite">
-      <div class="stats-header">
-        <div>
-          <h2>Download statistics</h2>
-          <p id="statsSummaryText">See which users open or download books.</p>
-        </div>
-        <button class="button" id="closeStatsButton" type="button">Close stats</button>
-      </div>
-      <div class="stats-grid" id="statsMetrics"></div>
-      <div class="stats-columns">
-        <section class="stats-section">
-          <h3>Top books</h3>
-          <div class="stats-list" id="statsBooks"></div>
-        </section>
-        <section class="stats-section">
-          <h3>User activity</h3>
-          <div class="stats-list" id="statsUsers"></div>
-        </section>
-      </div>
-      <section class="stats-section recent-section">
-        <h3>Recent activity</h3>
-        <div class="recent-list" id="statsRecent"></div>
-      </section>
-    </section>`
-        : ""
-    }
   </main>
   <input class="hidden" id="fileInput" multiple type="file">
 
@@ -1136,14 +1114,6 @@ function renderExplorer(request: Request, env: Env): string {
     const dropzone = document.querySelector("#dropzone");
     const searchInput = document.querySelector("#searchInput");
     const clearSearchButton = document.querySelector("#clearSearch");
-    const statsButton = document.querySelector("#statsButton");
-    const closeStatsButton = document.querySelector("#closeStatsButton");
-    const statsPanel = document.querySelector("#statsPanel");
-    const statsSummaryText = document.querySelector("#statsSummaryText");
-    const statsMetrics = document.querySelector("#statsMetrics");
-    const statsBooks = document.querySelector("#statsBooks");
-    const statsUsers = document.querySelector("#statsUsers");
-    const statsRecent = document.querySelector("#statsRecent");
     let searchDebounce = null;
 
     if (!appConfig.allowUploads) {
@@ -1199,8 +1169,6 @@ function renderExplorer(request: Request, env: Env): string {
     });
 
     clearSearchButton.addEventListener("click", () => exitSearch());
-    statsButton?.addEventListener("click", () => toggleStats());
-    closeStatsButton?.addEventListener("click", () => statsPanel?.classList.add("hidden"));
     fileInput.addEventListener("change", () => {
       uploadFiles(Array.from(fileInput.files || []));
       fileInput.value = "";
@@ -1321,138 +1289,6 @@ function renderExplorer(request: Request, env: Env): string {
       label.className = "crumb";
       label.textContent = "Search: " + state.query;
       breadcrumbs.appendChild(label);
-    }
-
-    async function toggleStats() {
-      if (!statsPanel) return;
-      const shouldOpen = statsPanel.classList.contains("hidden");
-      statsPanel.classList.toggle("hidden", !shouldOpen);
-      if (shouldOpen) await loadStats();
-    }
-
-    async function loadStats() {
-      if (!appConfig.canViewStats || !statsPanel) return;
-      statsSummaryText.textContent = "Loading statistics...";
-      statsMetrics.replaceChildren();
-      statsBooks.replaceChildren();
-      statsUsers.replaceChildren();
-      statsRecent.replaceChildren();
-
-      try {
-        const data = await api("/api/stats");
-        renderStats(data);
-      } catch (error) {
-        statsSummaryText.textContent = error.message || "Unable to load statistics.";
-      }
-    }
-
-    function renderStats(data) {
-      const totals = data.totals || {};
-      statsSummaryText.textContent = data.truncated
-        ? "Showing the latest stored sample of analytics events."
-        : "Updated " + formatDate(data.generatedAt) + ".";
-
-      renderMetric("Total events", totals.events || 0);
-      renderMetric("Downloads", totals.downloads || 0);
-      renderMetric("Opens", totals.opens || 0);
-      renderMetric("Users", totals.uniqueUsers || 0);
-
-      renderBookStats(data.byBook || []);
-      renderUserStats(data.byUser || []);
-      renderRecentStats(data.recent || []);
-    }
-
-    function renderMetric(label, value) {
-      const card = document.createElement("div");
-      card.className = "metric-card";
-      const valueEl = document.createElement("div");
-      valueEl.className = "metric-value";
-      valueEl.textContent = String(value);
-      const labelEl = document.createElement("div");
-      labelEl.className = "metric-label";
-      labelEl.textContent = label;
-      card.append(valueEl, labelEl);
-      statsMetrics.appendChild(card);
-    }
-
-    function renderBookStats(books) {
-      if (books.length === 0) {
-        renderEmptyStats(statsBooks, "No book activity has been recorded yet.");
-        return;
-      }
-
-      for (const book of books.slice(0, 10)) {
-        const item = statsItem(book.title || book.key, statsCountText(book));
-        const detail = document.createElement("div");
-        detail.className = "stats-item-detail";
-        detail.textContent = "Users: " + topEntries(book.users || {}).join(", ");
-        item.appendChild(detail);
-        statsBooks.appendChild(item);
-      }
-    }
-
-    function renderUserStats(users) {
-      if (users.length === 0) {
-        renderEmptyStats(statsUsers, "No user activity has been recorded yet.");
-        return;
-      }
-
-      for (const user of users.slice(0, 10)) {
-        const item = statsItem(user.username, statsCountText(user));
-        const detail = document.createElement("div");
-        detail.className = "stats-item-detail";
-        detail.textContent = "Books: " + topEntries(user.books || {}).join(", ");
-        item.appendChild(detail);
-        statsUsers.appendChild(item);
-      }
-    }
-
-    function renderRecentStats(events) {
-      if (events.length === 0) {
-        renderEmptyStats(statsRecent, "No recent activity has been recorded yet.");
-        return;
-      }
-
-      for (const event of events) {
-        const title = event.bookTitle || event.key;
-        const item = statsItem(
-          event.username + " " + event.action + "ed " + title,
-          formatDate(event.timestamp)
-        );
-        statsRecent.appendChild(item);
-      }
-    }
-
-    function renderEmptyStats(container, message) {
-      const item = document.createElement("div");
-      item.className = "stats-item muted";
-      item.textContent = message;
-      container.appendChild(item);
-    }
-
-    function statsItem(title, meta) {
-      const item = document.createElement("div");
-      item.className = "stats-item";
-      const titleEl = document.createElement("div");
-      titleEl.className = "stats-item-title";
-      titleEl.textContent = title;
-      const metaEl = document.createElement("div");
-      metaEl.className = "stats-item-meta";
-      metaEl.textContent = meta;
-      item.append(titleEl, metaEl);
-      return item;
-    }
-
-    function statsCountText(item) {
-      return item.total + " total - " + item.downloads + " downloads, " + item.opens + " opens";
-    }
-
-    function topEntries(values) {
-      const entries = Object.entries(values)
-        .sort((left, right) => right[1] - left[1])
-        .slice(0, 4)
-        .map(([name, count]) => name + " (" + count + ")");
-      return entries.length ? entries : ["none"];
     }
 
     function renderEntries(data, append) {
@@ -1770,6 +1606,472 @@ function renderExplorer(request: Request, env: Env): string {
       statusEl.textContent = message;
     }
   </script>
+</body>
+</html>`;
+}
+
+function renderStatsPage(env: Env): string {
+  const title = env.EXPLORER_TITLE || "R2 Drive";
+
+  return `<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Stats - ${escapeHtml(title)}</title>
+  <link rel="icon" type="image/png" href="${FAVICON_URL}">
+  <style>
+    :root {
+      color-scheme: light;
+      --bg: #b01aa8;
+      --card: #ffffff;
+      --text: #182033;
+      --muted: #647084;
+      --line: #dde3ee;
+      --accent: #ffffff;
+      --accent-dark: #f4edf7;
+      --accent-text: #2a0630;
+      --shadow: 0 18px 45px rgba(42, 6, 40, 0.24);
+    }
+    * {
+      box-sizing: border-box;
+    }
+    body {
+      background: var(--bg);
+      color: var(--text);
+      font: 15px/1.5 ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      margin: 0;
+      min-height: 100vh;
+    }
+    .shell {
+      margin: 0 auto;
+      max-width: 1180px;
+      padding: 32px 20px 56px;
+    }
+    .topbar {
+      align-items: center;
+      color: white;
+      display: flex;
+      gap: 16px;
+      justify-content: space-between;
+      margin-bottom: 24px;
+    }
+    .brand {
+      align-items: center;
+      display: flex;
+      gap: 14px;
+    }
+    .logo {
+      align-items: center;
+      background: var(--accent);
+      border-radius: 16px;
+      display: inline-flex;
+      height: 48px;
+      justify-content: center;
+      overflow: hidden;
+      width: 48px;
+    }
+    .logo img {
+      display: block;
+      height: 100%;
+      object-fit: contain;
+      width: 100%;
+    }
+    h1,
+    h2,
+    h3 {
+      margin: 0;
+    }
+    h1 {
+      font-size: clamp(24px, 4vw, 34px);
+      line-height: 1.1;
+    }
+    .subtitle {
+      color: rgba(255, 255, 255, 0.82);
+      margin-top: 4px;
+    }
+    .button {
+      align-items: center;
+      background: var(--accent);
+      border: 1px solid var(--accent);
+      border-radius: 12px;
+      color: var(--accent-text);
+      cursor: pointer;
+      display: inline-flex;
+      font-weight: 700;
+      min-height: 44px;
+      padding: 10px 14px;
+      text-decoration: none;
+      transition: 0.16s ease;
+    }
+    .button:hover {
+      background: var(--accent-dark);
+      border-color: var(--accent-dark);
+      transform: translateY(-1px);
+    }
+    .card {
+      background: rgba(255, 255, 255, 0.94);
+      border: 1px solid rgba(221, 227, 238, 0.9);
+      border-radius: 24px;
+      box-shadow: var(--shadow);
+      padding: 20px;
+    }
+    .stats-header {
+      align-items: flex-start;
+      display: flex;
+      gap: 16px;
+      justify-content: space-between;
+      margin-bottom: 18px;
+    }
+    .stats-header p {
+      color: var(--muted);
+      margin: 4px 0 0;
+    }
+    .stats-grid {
+      display: grid;
+      gap: 12px;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      margin-bottom: 20px;
+    }
+    .metric-card,
+    .stats-list,
+    .recent-list {
+      background: #fbfcff;
+      border: 1px solid var(--line);
+      border-radius: 16px;
+    }
+    .metric-card {
+      padding: 14px;
+    }
+    .metric-value {
+      font-size: 28px;
+      font-weight: 800;
+      line-height: 1;
+    }
+    .metric-label {
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 700;
+      letter-spacing: 0.06em;
+      margin-top: 8px;
+      text-transform: uppercase;
+    }
+    .stats-columns {
+      display: grid;
+      gap: 16px;
+      grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+    }
+    .stats-section h3 {
+      margin-bottom: 10px;
+    }
+    .stats-list,
+    .recent-list {
+      display: grid;
+      overflow: hidden;
+    }
+    .stats-item {
+      border-bottom: 1px solid var(--line);
+      padding: 12px 14px;
+    }
+    .stats-item:last-child {
+      border-bottom: 0;
+    }
+    .stats-item-title {
+      font-weight: 800;
+      overflow-wrap: anywhere;
+    }
+    .stats-item-meta,
+    .stats-item-detail {
+      color: var(--muted);
+      font-size: 13px;
+      margin-top: 3px;
+      overflow-wrap: anywhere;
+    }
+    .recent-section {
+      margin-top: 18px;
+    }
+    .muted {
+      color: var(--muted);
+    }
+    @media (max-width: 760px) {
+      .shell {
+        padding: 22px 12px 36px;
+      }
+      .topbar,
+      .stats-header {
+        align-items: flex-start;
+        flex-direction: column;
+      }
+      .stats-grid,
+      .stats-columns {
+        grid-template-columns: 1fr;
+      }
+      .button {
+        justify-content: center;
+        width: 100%;
+      }
+      .card {
+        border-radius: 18px;
+        padding: 16px;
+      }
+    }
+  </style>
+</head>
+<body>
+  <main class="shell">
+    <header class="topbar">
+      <div class="brand">
+        <div class="logo" aria-hidden="true">
+          <img src="${LOGO_URL}" alt="">
+        </div>
+        <div>
+          <h1>Download statistics</h1>
+          <div class="subtitle">See which users open or download books.</div>
+        </div>
+      </div>
+      <a class="button" href="/files">Back to files</a>
+    </header>
+
+    <section class="card" aria-live="polite">
+      <div class="stats-header">
+        <div>
+          <h2>${escapeHtml(title)} activity</h2>
+          <p id="statsSummaryText">Loading statistics...</p>
+        </div>
+        <button class="button" id="refreshStatsButton" type="button">Refresh stats</button>
+      </div>
+      <div class="stats-grid" id="statsMetrics"></div>
+      <div class="stats-columns">
+        <section class="stats-section">
+          <h3>Top books</h3>
+          <div class="stats-list" id="statsBooks"></div>
+        </section>
+        <section class="stats-section">
+          <h3>User activity</h3>
+          <div class="stats-list" id="statsUsers"></div>
+        </section>
+      </div>
+      <section class="stats-section recent-section">
+        <h3>Recent activity</h3>
+        <div class="recent-list" id="statsRecent"></div>
+      </section>
+    </section>
+  </main>
+
+  <script>
+    const statsSummaryText = document.querySelector("#statsSummaryText");
+    const statsMetrics = document.querySelector("#statsMetrics");
+    const statsBooks = document.querySelector("#statsBooks");
+    const statsUsers = document.querySelector("#statsUsers");
+    const statsRecent = document.querySelector("#statsRecent");
+    const refreshStatsButton = document.querySelector("#refreshStatsButton");
+
+    refreshStatsButton.addEventListener("click", () => loadStats());
+    loadStats();
+
+    async function loadStats() {
+      statsSummaryText.textContent = "Loading statistics...";
+      statsMetrics.replaceChildren();
+      statsBooks.replaceChildren();
+      statsUsers.replaceChildren();
+      statsRecent.replaceChildren();
+
+      try {
+        const data = await api("/api/stats");
+        renderStats(data);
+      } catch (error) {
+        statsSummaryText.textContent = error.message || "Unable to load statistics.";
+      }
+    }
+
+    function renderStats(data) {
+      const totals = data.totals || {};
+      statsSummaryText.textContent = data.truncated
+        ? "Showing the latest stored sample of analytics events."
+        : "Updated " + formatDate(data.generatedAt) + ".";
+
+      renderMetric("Total events", totals.events || 0);
+      renderMetric("Downloads", totals.downloads || 0);
+      renderMetric("Opens", totals.opens || 0);
+      renderMetric("Users", totals.uniqueUsers || 0);
+
+      renderBookStats(data.byBook || []);
+      renderUserStats(data.byUser || []);
+      renderRecentStats(data.recent || []);
+    }
+
+    function renderMetric(label, value) {
+      const card = document.createElement("div");
+      card.className = "metric-card";
+      const valueEl = document.createElement("div");
+      valueEl.className = "metric-value";
+      valueEl.textContent = String(value);
+      const labelEl = document.createElement("div");
+      labelEl.className = "metric-label";
+      labelEl.textContent = label;
+      card.append(valueEl, labelEl);
+      statsMetrics.appendChild(card);
+    }
+
+    function renderBookStats(books) {
+      if (books.length === 0) {
+        renderEmptyStats(statsBooks, "No book activity has been recorded yet.");
+        return;
+      }
+
+      for (const book of books.slice(0, 10)) {
+        const item = statsItem(book.title || book.key, statsCountText(book));
+        const detail = document.createElement("div");
+        detail.className = "stats-item-detail";
+        detail.textContent = "Users: " + topEntries(book.users || {}).join(", ");
+        item.appendChild(detail);
+        statsBooks.appendChild(item);
+      }
+    }
+
+    function renderUserStats(users) {
+      if (users.length === 0) {
+        renderEmptyStats(statsUsers, "No user activity has been recorded yet.");
+        return;
+      }
+
+      for (const user of users.slice(0, 10)) {
+        const item = statsItem(user.username, statsCountText(user));
+        const detail = document.createElement("div");
+        detail.className = "stats-item-detail";
+        detail.textContent = "Books: " + topEntries(user.books || {}).join(", ");
+        item.appendChild(detail);
+        statsUsers.appendChild(item);
+      }
+    }
+
+    function renderRecentStats(events) {
+      if (events.length === 0) {
+        renderEmptyStats(statsRecent, "No recent activity has been recorded yet.");
+        return;
+      }
+
+      for (const event of events) {
+        const title = event.bookTitle || event.key;
+        const item = statsItem(
+          event.username + " " + event.action + "ed " + title,
+          formatDate(event.timestamp)
+        );
+        statsRecent.appendChild(item);
+      }
+    }
+
+    function renderEmptyStats(container, message) {
+      const item = document.createElement("div");
+      item.className = "stats-item muted";
+      item.textContent = message;
+      container.appendChild(item);
+    }
+
+    function statsItem(title, meta) {
+      const item = document.createElement("div");
+      item.className = "stats-item";
+      const titleEl = document.createElement("div");
+      titleEl.className = "stats-item-title";
+      titleEl.textContent = title;
+      const metaEl = document.createElement("div");
+      metaEl.className = "stats-item-meta";
+      metaEl.textContent = meta;
+      item.append(titleEl, metaEl);
+      return item;
+    }
+
+    function statsCountText(item) {
+      return (item.total || 0) + " total - " + (item.downloads || 0) + " downloads, " + (item.opens || 0) + " opens";
+    }
+
+    function topEntries(values) {
+      const entries = Object.entries(values)
+        .sort((left, right) => right[1] - left[1])
+        .slice(0, 4)
+        .map(([name, count]) => name + " (" + count + ")");
+      return entries.length ? entries : ["none"];
+    }
+
+    async function api(path) {
+      const response = await fetch(path);
+      if (response.status === 401) {
+        location.href = "/login?next=" + encodeURIComponent(location.pathname + location.search);
+        throw new Error("Authentication required.");
+      }
+
+      const body = await response.json();
+      if (!response.ok) throw new Error(body?.error || "Request failed.");
+      return body;
+    }
+
+    function formatDate(value) {
+      return new Intl.DateTimeFormat(undefined, {
+        dateStyle: "medium",
+        timeStyle: "short"
+      }).format(new Date(value));
+    }
+  </script>
+</body>
+</html>`;
+}
+
+function renderStatsForbidden(env: Env): string {
+  const title = env.EXPLORER_TITLE || "R2 Drive";
+
+  return `<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Stats unavailable - ${escapeHtml(title)}</title>
+  <link rel="icon" type="image/png" href="${FAVICON_URL}">
+  <style>
+    body {
+      align-items: center;
+      background: #b01aa8;
+      color: #182033;
+      display: flex;
+      font: 15px/1.5 ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      justify-content: center;
+      margin: 0;
+      min-height: 100vh;
+      padding: 20px;
+    }
+    .card {
+      background: white;
+      border-radius: 22px;
+      box-shadow: 0 18px 45px rgba(42, 6, 40, 0.24);
+      max-width: 460px;
+      padding: 28px;
+      width: 100%;
+    }
+    h1 {
+      margin: 0 0 8px;
+    }
+    p {
+      color: #647084;
+      margin: 0 0 22px;
+    }
+    a {
+      background: #ffffff;
+      border: 1px solid #dde3ee;
+      border-radius: 12px;
+      color: #2a0630;
+      display: inline-flex;
+      font-weight: 700;
+      min-height: 44px;
+      padding: 10px 14px;
+      text-decoration: none;
+    }
+  </style>
+</head>
+<body>
+  <section class="card">
+    <h1>Stats unavailable</h1>
+    <p>Statistics are only available to users with admin/delete permission.</p>
+    <a href="/files">Back to files</a>
+  </section>
 </body>
 </html>`;
 }
