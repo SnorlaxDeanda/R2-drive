@@ -862,6 +862,7 @@ function renderExplorer(request: Request, env: Env): string {
         grid-template-columns: 1fr;
       }
       .search {
+        flex: 0 0 auto;
         max-width: none;
         width: 100%;
       }
@@ -895,6 +896,7 @@ function renderExplorer(request: Request, env: Env): string {
         border-radius: 18px;
       }
       .toolbar {
+        gap: 12px;
         padding: 14px 16px;
       }
       .breadcrumbs {
