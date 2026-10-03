@@ -1955,7 +1955,7 @@ function renderStatsPage(env: Env): string {
         const title = event.bookTitle || event.key;
         const item = statsItem(
           event.username + " " + event.action + "ed " + title,
-          formatDate(event.timestamp)
+          "Date: " + formatDateOnly(event.timestamp) + " - Time: " + formatTimeOnly(event.timestamp)
         );
         statsRecent.appendChild(item);
       }
@@ -2008,6 +2008,18 @@ function renderStatsPage(env: Env): string {
     function formatDate(value) {
       return new Intl.DateTimeFormat(undefined, {
         dateStyle: "medium",
+        timeStyle: "short"
+      }).format(new Date(value));
+    }
+
+    function formatDateOnly(value) {
+      return new Intl.DateTimeFormat(undefined, {
+        dateStyle: "medium"
+      }).format(new Date(value));
+    }
+
+    function formatTimeOnly(value) {
+      return new Intl.DateTimeFormat(undefined, {
         timeStyle: "short"
       }).format(new Date(value));
     }

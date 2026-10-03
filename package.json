@@ -26,9 +26,9 @@
   },
   "homepage": "https://github.com/SnorlaxDeanda/R2-drive#readme",
   "devDependencies": {
-    "@cloudflare/workers-types": "^5.20260826.1",
+    "@cloudflare/workers-types": "^5.20261003.1",
     "typescript": "^6.0.3",
-    "wrangler": "^4.126.0"
+    "wrangler": "^4.147.0"
   },
   "overrides": {
     "ws": "8.21.3",
