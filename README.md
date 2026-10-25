@@ -163,12 +163,24 @@ ALLOW_DELETES = "false"
 
 ## Book covers and descriptions
 
-To show book covers and descriptions, upload a JSON file named
-`_book-metadata.json` to the root of the R2 bucket. The explorer hides this file
-from the normal file list and uses it to decorate matching book files.
+When a user uploads an `.epub` file from the browser, the explorer tries to read
+the EPUB metadata before uploading it. It extracts the package OPF path from
+`META-INF/container.xml`, then reads title, author, description, and cover image
+metadata from the OPF file.
 
-Use the exact R2 object key for each book. If a book is inside a folder, include
-the folder path in the key:
+If a cover image is found, the Worker uploads it to:
+
+```txt
+covers/<cleaned-epub-filename>.<extension>
+```
+
+The Worker then merges the extracted book data into `_book-metadata.json` in the
+root of the R2 bucket. The explorer hides this file from normal file browsing and
+uses it to decorate matching book files.
+
+You can still maintain `_book-metadata.json` manually from the R2 dashboard or
+another admin tool if needed. Use the exact R2 object key for each book. If a
+book is inside a folder, include the folder path in the key:
 
 ```json
 {
