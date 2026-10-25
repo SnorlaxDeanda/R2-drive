@@ -95,32 +95,47 @@ When Wrangler asks for the value, paste JSON like this:
 {"alice":"alice-secret-token","bob":"bob-secret-token"}
 ```
 
-Users will be redirected to `/login` and must enter their username and token.
+Users will be redirected to `/login` and must enter their username and password.
 
-By default, users in the simple format can browse and upload, but they cannot
-delete. To let one user delete files, use the expanded format and set
-`canDelete` to `true` for that user:
+By default, users in the simple format can browse, open, and download, but they
+cannot upload, delete, or view stats. Use the expanded format to grant extra
+permissions:
 
 ```json
 {
   "john": {
     "token": "john-secret-token",
-    "canDelete": true
+    "canDelete": true,
+    "canUpload": true,
+    "canViewStats": true,
+    "canChangePassword": true
   },
-  "jane": "jane-secret-token",
-  "sam": "sam-secret-token"
+  "jane": {
+    "token": "jane-secret-token",
+    "canUpload": true,
+    "canChangePassword": true
+  },
+  "sam": {
+    "token": "sam-secret-token",
+    "canChangePassword": false
+  }
 }
 ```
 
-In that example, `john` can delete files. `jane` and `sam` cannot delete files.
-`ALLOW_DELETES` must also stay set to `"true"` in `wrangler.toml`; setting it to
-`"false"` disables deletes for everyone.
+In that example:
+
+- `john` can upload, delete, and view stats.
+- `jane` can upload but cannot delete or view stats.
+- `sam` can browse, open, and download only, and cannot change his password.
+
+`ALLOW_UPLOADS` and `ALLOW_DELETES` must also stay set to `"true"` in
+`wrangler.toml`; setting either to `"false"` disables that action for everyone.
 
 To add another user in the future, run the same command again with the updated
 JSON:
 
 ```json
-{"john":{"token":"john-secret-token","canDelete":true},"jane":"jane-secret-token","sam":"sam-secret-token","charlie":"charlie-secret-token"}
+{"john":{"token":"john-secret-token","canDelete":true,"canUpload":true,"canViewStats":true,"canChangePassword":true},"jane":{"token":"jane-secret-token","canUpload":true,"canChangePassword":true},"sam":{"token":"sam-secret-token","canChangePassword":false},"charlie":"charlie-secret-token"}
 ```
 
 For a single shared token, the app still supports the older `AUTH_TOKEN` secret:
@@ -128,6 +143,12 @@ For a single shared token, the app still supports the older `AUTH_TOKEN` secret:
 ```sh
 npx wrangler secret put AUTH_TOKEN
 ```
+
+Signed-in users can change their own password from the explorer. Changed
+passwords are stored privately in R2 under `_auth/users/`, which is hidden from
+normal browsing and blocked from generic file access. The `AUTH_USERS` secret
+still defines each user's username and permissions. To block a user from changing
+their password, set `canChangePassword` to `false`.
 
 ### Disable writes
 
@@ -196,7 +217,7 @@ _analytics/downloads/
 
 The `_analytics/` folder is hidden from normal browsing and search results.
 
-Users who can delete files (`canDelete: true`) can also view statistics by
+Users who have `canViewStats: true` or `canDelete: true` can view statistics by
 clicking the `Stats` button in the explorer. That opens the dedicated `/stats`
 page, which shows:
 
@@ -211,7 +232,8 @@ Example user with stats access:
 {
   "Joe": {
     "token": "joe-password",
-    "canDelete": true
+    "canDelete": true,
+    "canViewStats": true
   },
   "Reader": "reader-password"
 }

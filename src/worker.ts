@@ -62,7 +62,10 @@ interface BookInfo {
 }
 
 interface AuthUser {
+  canChangePassword: boolean;
   canDelete: boolean;
+  canUpload: boolean;
+  canViewStats: boolean;
   username: string;
   token: string;
 }
@@ -73,6 +76,7 @@ const FAVICON_URL = "https://www.freeiconspng.com/download/138";
 const LOGO_URL = "https://www.pngmart.com/files/22/Snorlax-Pokemon-PNG.gif";
 const BOOK_METADATA_KEY = "_book-metadata.json";
 const ANALYTICS_PREFIX = "_analytics/";
+const AUTH_OVERRIDES_PREFIX = "_auth/users/";
 const DOWNLOAD_EVENTS_PREFIX = `${ANALYTICS_PREFIX}downloads/`;
 
 export default {
@@ -88,7 +92,7 @@ export default {
         return handleLogin(request, env, url);
       }
 
-      if (hasAuth(env) && !isAuthorized(request, env)) {
+      if (hasAuth(env) && !(await isAuthorized(request, env))) {
         return unauthorizedResponse(request, url);
       }
 
@@ -105,7 +109,7 @@ export default {
       }
 
       if (url.pathname === "/stats" && request.method === "GET") {
-        if (!canViewStats(request, env)) {
+        if (!(await canViewStats(request, env))) {
           return html(renderStatsForbidden(env), 403);
         }
 
@@ -122,6 +126,10 @@ export default {
 
       if (url.pathname === "/api/stats" && request.method === "GET") {
         return getStats(request, env);
+      }
+
+      if (url.pathname === "/api/password" && request.method === "POST") {
+        return changePassword(request, env);
       }
 
       if (url.pathname === "/api/object" && request.method === "GET") {
@@ -141,7 +149,7 @@ export default {
       }
 
       if (request.method === "GET" && (url.pathname === "/files" || url.pathname.startsWith("/files/"))) {
-        return html(renderExplorer(request, env), 200);
+        return html(await renderExplorer(request, env), 200);
       }
 
       return json({ error: "Not found" }, 404);
@@ -265,6 +273,10 @@ async function searchObjects(request: Request, env: Env): Promise<Response> {
 async function getObject(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
   const url = new URL(request.url);
   const key = normalizeKey(url.searchParams.get("key"));
+  if (isInternalKey(key)) {
+    return json({ error: "Object not found" }, 404);
+  }
+
   const object = await env.BUCKET.get(key, {
     range: request.headers,
   });
@@ -304,7 +316,7 @@ async function getObject(request: Request, env: Env, ctx: ExecutionContext): Pro
 }
 
 async function getStats(request: Request, env: Env): Promise<Response> {
-  if (!canViewStats(request, env)) {
+  if (!(await canViewStats(request, env))) {
     return json({ error: "Statistics are only available to administrators" }, 403);
   }
 
@@ -314,7 +326,7 @@ async function getStats(request: Request, env: Env): Promise<Response> {
 }
 
 async function uploadObjects(request: Request, env: Env): Promise<Response> {
-  if (!isEnabled(env.ALLOW_UPLOADS, true)) {
+  if (!(await canUploadObjects(request, env))) {
     return json({ error: "Uploads are disabled" }, 403);
   }
 
@@ -330,6 +342,10 @@ async function uploadObjects(request: Request, env: Env): Promise<Response> {
 
   for (const file of files) {
     const key = `${prefix}${normalizeObjectName(file.name)}`;
+    if (isInternalKey(key)) {
+      return json({ error: "That file path is reserved for internal app data" }, 400);
+    }
+
     const object = await env.BUCKET.put(key, file.stream(), {
       httpMetadata: {
         contentType: file.type || "application/octet-stream",
@@ -350,7 +366,7 @@ async function uploadObjects(request: Request, env: Env): Promise<Response> {
 }
 
 async function createFolder(request: Request, env: Env): Promise<Response> {
-  if (!isEnabled(env.ALLOW_UPLOADS, true)) {
+  if (!(await canUploadObjects(request, env))) {
     return json({ error: "Folder creation is disabled" }, 403);
   }
 
@@ -358,6 +374,10 @@ async function createFolder(request: Request, env: Env): Promise<Response> {
   const prefix = normalizePrefix(body.prefix ?? "");
   const folder = normalizeFolderName(body.name ?? "");
   const folderPrefix = `${prefix}${folder}/`;
+  if (isInternalKey(folderPrefix)) {
+    return json({ error: "That folder path is reserved for internal app data" }, 400);
+  }
+
   const markerKey = `${folderPrefix}.keep`;
   const object = await env.BUCKET.put(markerKey, "", {
     customMetadata: {
@@ -384,18 +404,22 @@ async function createFolder(request: Request, env: Env): Promise<Response> {
 }
 
 async function deleteObject(request: Request, env: Env): Promise<Response> {
-  if (!canDeleteObjects(request, env)) {
+  if (!(await canDeleteObjects(request, env))) {
     return json({ error: "Deletes are disabled" }, 403);
   }
 
   const url = new URL(request.url);
   const key = normalizeKey(url.searchParams.get("key"));
+  if (isInternalKey(key)) {
+    return json({ error: "Internal app data cannot be deleted here" }, 403);
+  }
+
   await env.BUCKET.delete(key);
   return json({ deleted: key });
 }
 
 async function handleLogin(request: Request, env: Env, url: URL): Promise<Response> {
-  const users = getAuthUsers(env);
+  const users = getConfiguredAuthUsers(env);
 
   if (request.method === "GET") {
     return html(renderLogin(url, users), 200);
@@ -409,7 +433,7 @@ async function handleLogin(request: Request, env: Env, url: URL): Promise<Respon
   const username = String(form.get("username") ?? "");
   const token = String(form.get("token") ?? "").trim();
   const next = safeNextPath(String(form.get("next") ?? "/files"));
-  const user = authenticateUser(users, username, token);
+  const user = await authenticateUser(env, username, token);
 
   if (!user) {
     return html(renderLogin(url, users, "The username or token you entered is not valid."), 401);
@@ -418,11 +442,55 @@ async function handleLogin(request: Request, env: Env, url: URL): Promise<Respon
   return redirectWithCookie(next, authCookie(user, url));
 }
 
-function renderExplorer(request: Request, env: Env): string {
+async function changePassword(request: Request, env: Env): Promise<Response> {
+  const user = await getCurrentUser(request, env);
+  if (!user || user.username === "anonymous") {
+    return json({ error: "Authentication required" }, 401);
+  }
+
+  if (!user.canChangePassword) {
+    return json({ error: "Password changes are disabled for this user" }, 403);
+  }
+
+  const body = await request.json<{ currentPassword?: string; newPassword?: string }>();
+  const currentPassword = String(body.currentPassword ?? "").trim();
+  const newPassword = String(body.newPassword ?? "").trim();
+
+  if (!newPassword || newPassword.length < 4) {
+    return json({ error: "New password must be at least 4 characters" }, 400);
+  }
+
+  const verified = await authenticateUser(env, user.username, currentPassword);
+  if (!verified) {
+    return json({ error: "Current password is not correct" }, 403);
+  }
+
+  const updatedAt = new Date().toISOString();
+  await env.BUCKET.put(
+    authOverrideKey(user.username),
+    JSON.stringify({ token: newPassword, updatedAt, username: user.username }),
+    {
+      httpMetadata: {
+        contentType: "application/json",
+      },
+    },
+  );
+
+  return jsonWithCookie(
+    { updated: true, updatedAt },
+    authCookie({ ...user, token: newPassword }, new URL(request.url)),
+  );
+}
+
+async function renderExplorer(request: Request, env: Env): Promise<string> {
   const title = env.EXPLORER_TITLE || "R2 Drive";
+  const currentUser = await getCurrentUser(request, env);
+  const canUseUploads = await canUploadObjects(request, env);
+  const canUseDeletes = await canDeleteObjects(request, env);
+  const canUseStats = await canViewStats(request, env);
   const config = safeJson({
-    allowDeletes: canDeleteObjects(request, env),
-    allowUploads: isEnabled(env.ALLOW_UPLOADS, true),
+    allowDeletes: canUseDeletes,
+    allowUploads: canUseUploads,
     title,
   });
 
@@ -1051,10 +1119,11 @@ function renderExplorer(request: Request, env: Env): string {
         </div>
       </div>
       <div class="actions">
-        ${canViewStats(request, env) ? '<a class="button" href="/stats">Stats</a>' : ""}
+        ${canUseStats ? '<a class="button" href="/stats">Stats</a>' : ""}
         <button class="button" id="refreshButton" type="button">Refresh</button>
-        <button class="button" id="newFolderButton" type="button">New folder</button>
-        <button class="button primary" id="uploadButton" type="button">Upload files</button>
+        ${hasAuth(env) && currentUser?.canChangePassword ? '<button class="button" id="passwordButton" type="button">Change password</button>' : ""}
+        ${canUseUploads ? '<button class="button" id="newFolderButton" type="button">New folder</button>' : ""}
+        ${canUseUploads ? '<button class="button primary" id="uploadButton" type="button">Upload files</button>' : ""}
         ${hasAuth(env) ? '<a class="button" href="/logout">Sign out</a>' : ""}
       </div>
     </header>
@@ -1109,6 +1178,7 @@ function renderExplorer(request: Request, env: Env): string {
     const loadMoreButton = document.querySelector("#loadMoreButton");
     const uploadButton = document.querySelector("#uploadButton");
     const newFolderButton = document.querySelector("#newFolderButton");
+    const passwordButton = document.querySelector("#passwordButton");
     const refreshButton = document.querySelector("#refreshButton");
     const fileInput = document.querySelector("#fileInput");
     const dropzone = document.querySelector("#dropzone");
@@ -1117,8 +1187,8 @@ function renderExplorer(request: Request, env: Env): string {
     let searchDebounce = null;
 
     if (!appConfig.allowUploads) {
-      uploadButton.classList.add("hidden");
-      newFolderButton.classList.add("hidden");
+      uploadButton?.classList.add("hidden");
+      newFolderButton?.classList.add("hidden");
       dropzone.classList.add("hidden");
     }
 
@@ -1140,8 +1210,9 @@ function renderExplorer(request: Request, env: Env): string {
       if (state.mode === "search") performSearch({ append: true });
       else loadList({ append: true });
     });
-    uploadButton.addEventListener("click", () => fileInput.click());
-    newFolderButton.addEventListener("click", createFolder);
+    uploadButton?.addEventListener("click", () => fileInput.click());
+    newFolderButton?.addEventListener("click", createFolder);
+    passwordButton?.addEventListener("click", changePassword);
 
     searchInput.addEventListener("input", () => {
       const value = searchInput.value.trim();
@@ -1517,6 +1588,29 @@ function renderExplorer(request: Request, env: Env): string {
         await loadList();
       } catch (error) {
         setStatus(error.message || "Could not create folder.");
+      }
+    }
+
+    async function changePassword() {
+      const currentPassword = prompt("Current password");
+      if (currentPassword === null) return;
+
+      const newPassword = prompt("New password");
+      if (!newPassword) {
+        setStatus("Password was not changed.");
+        return;
+      }
+
+      try {
+        await api("/api/password", {
+          body: JSON.stringify({ currentPassword, newPassword }),
+          headers: { "content-type": "application/json" },
+          method: "POST"
+        });
+        setStatus("Password updated.");
+        alert("Password updated.");
+      } catch (error) {
+        setStatus(error.message || "Password update failed.");
       }
     }
 
@@ -1955,7 +2049,7 @@ function renderStatsPage(env: Env): string {
         const title = event.bookTitle || event.key;
         const item = statsItem(
           event.username + " " + event.action + "ed " + title,
-          formatDate(event.timestamp)
+          "Date: " + formatDateOnly(event.timestamp) + " - Time: " + formatTimeOnly(event.timestamp)
         );
         statsRecent.appendChild(item);
       }
@@ -2008,6 +2102,18 @@ function renderStatsPage(env: Env): string {
     function formatDate(value) {
       return new Intl.DateTimeFormat(undefined, {
         dateStyle: "medium",
+        timeStyle: "short"
+      }).format(new Date(value));
+    }
+
+    function formatDateOnly(value) {
+      return new Intl.DateTimeFormat(undefined, {
+        dateStyle: "medium"
+      }).format(new Date(value));
+    }
+
+    function formatTimeOnly(value) {
+      return new Intl.DateTimeFormat(undefined, {
         timeStyle: "short"
       }).format(new Date(value));
     }
@@ -2183,6 +2289,17 @@ function json(data: unknown, status = 200): Response {
   });
 }
 
+function jsonWithCookie(data: unknown, cookie: string, status = 200): Response {
+  return new Response(JSON.stringify(data), {
+    headers: {
+      "cache-control": "no-store",
+      "content-type": "application/json; charset=utf-8",
+      "set-cookie": cookie,
+    },
+    status,
+  });
+}
+
 function html(markup: string, status = 200): Response {
   return new Response(markup, {
     headers: {
@@ -2291,7 +2408,7 @@ async function recordAccessEvent(
   key: string,
   action: AccessEvent["action"],
 ): Promise<void> {
-  const user = getCurrentUser(request, env);
+  const user = await getCurrentUser(request, env);
   const bookMetadata = await getBookMetadata(env);
   const book = findBookInfo(bookMetadata, key, basename(key));
   const timestamp = new Date().toISOString();
@@ -2469,7 +2586,7 @@ function shouldTrackAccess(key: string): boolean {
 }
 
 function isInternalKey(key: string): boolean {
-  return key === BOOK_METADATA_KEY || key.startsWith(ANALYTICS_PREFIX);
+  return key === BOOK_METADATA_KEY || key.startsWith(ANALYTICS_PREFIX) || key.startsWith(AUTH_OVERRIDES_PREFIX);
 }
 
 function folderName(prefix: string, folderPrefix: string): string {
@@ -2490,10 +2607,10 @@ function isEnabled(value: string | undefined, defaultValue: boolean): boolean {
 }
 
 function hasAuth(env: Env): boolean {
-  return getAuthUsers(env).length > 0;
+  return getConfiguredAuthUsers(env).length > 0;
 }
 
-function getAuthUsers(env: Env): AuthUser[] {
+function getConfiguredAuthUsers(env: Env): AuthUser[] {
   const users: AuthUser[] = [];
 
   if (env.AUTH_USERS?.trim()) {
@@ -2502,7 +2619,10 @@ function getAuthUsers(env: Env): AuthUser[] {
 
   if (env.AUTH_TOKEN?.trim()) {
     users.push({
+      canChangePassword: true,
       canDelete: isEnabled(env.ALLOW_DELETES, true),
+      canUpload: isEnabled(env.ALLOW_UPLOADS, true),
+      canViewStats: isEnabled(env.ALLOW_DELETES, true),
       username: "default",
       token: env.AUTH_TOKEN.trim(),
     });
@@ -2528,7 +2648,10 @@ function parseAuthUsers(value: string): AuthUser[] {
       return trimmed.split(",").map((pair) => {
         const separator = pair.indexOf(":");
         return {
+          canChangePassword: true,
           canDelete: false,
+          canUpload: false,
+          canViewStats: false,
           username: pair.slice(0, separator).trim(),
           token: pair.slice(separator + 1).trim(),
         };
@@ -2542,7 +2665,10 @@ function parseAuthUsers(value: string): AuthUser[] {
 function parseAuthUser(username: string, value: unknown): AuthUser | null {
   if (typeof value === "string") {
     return {
+      canChangePassword: true,
       canDelete: false,
+      canUpload: false,
+      canViewStats: false,
       username: username.trim(),
       token: value.trim(),
     };
@@ -2552,54 +2678,108 @@ function parseAuthUser(username: string, value: unknown): AuthUser | null {
     return null;
   }
 
-  const config = value as { canDelete?: unknown; token?: unknown };
+  const config = value as { canChangePassword?: unknown; canDelete?: unknown; canUpload?: unknown; canViewStats?: unknown; token?: unknown };
   if (typeof config.token !== "string") {
     return null;
   }
 
   return {
+    canChangePassword: config.canChangePassword !== false,
     canDelete: config.canDelete === true,
+    canUpload: config.canUpload === true,
+    canViewStats: config.canViewStats === true,
     username: username.trim(),
     token: config.token.trim(),
   };
 }
 
-function authenticateUser(users: AuthUser[], username: string, token: string): AuthUser | null {
+async function getResolvedAuthUser(env: Env, username: string): Promise<AuthUser | null> {
+  const configured = getConfiguredAuthUsers(env).find((user) => user.username === username);
+  if (!configured) return null;
+
+  const override = await getPasswordOverride(env, username);
+  if (!override) return configured;
+
+  return {
+    ...configured,
+    token: override.token,
+  };
+}
+
+async function getPasswordOverride(env: Env, username: string): Promise<{ token: string } | null> {
+  try {
+    const object = await env.BUCKET.get(authOverrideKey(username));
+    if (!object) return null;
+
+    const parsed = JSON.parse(await object.text()) as { token?: unknown };
+    if (typeof parsed.token !== "string" || !parsed.token.trim()) return null;
+
+    return { token: parsed.token.trim() };
+  } catch {
+    return null;
+  }
+}
+
+function authOverrideKey(username: string): string {
+  return `${AUTH_OVERRIDES_PREFIX}${encodeURIComponent(username)}.json`;
+}
+
+async function authenticateUser(env: Env, username: string, token: string): Promise<AuthUser | null> {
+  const users = getConfiguredAuthUsers(env);
   const cleanUsername = username.trim();
   const cleanToken = token.trim();
   if (!cleanToken) return null;
 
-  return (
-    users.find((user) => {
-      const usernameMatches = cleanUsername ? user.username === cleanUsername : users.length === 1;
-      return usernameMatches && user.token === cleanToken;
-    }) ?? null
-  );
+  const candidates = cleanUsername ? [cleanUsername] : users.length === 1 ? [users[0].username] : [];
+
+  for (const candidate of candidates) {
+    const user = await getResolvedAuthUser(env, candidate);
+    if (user?.token === cleanToken) return user;
+  }
+
+  return null;
 }
 
-function isAuthorized(request: Request, env: Env): boolean {
-  return getCurrentUser(request, env) !== null;
+async function isAuthorized(request: Request, env: Env): Promise<boolean> {
+  return (await getCurrentUser(request, env)) !== null;
 }
 
-function canDeleteObjects(request: Request, env: Env): boolean {
+async function canDeleteObjects(request: Request, env: Env): Promise<boolean> {
   if (!isEnabled(env.ALLOW_DELETES, true)) return false;
 
-  const users = getAuthUsers(env);
+  const users = getConfiguredAuthUsers(env);
   if (users.length === 0) return true;
 
-  const user = getCurrentUser(request, env);
+  const user = await getCurrentUser(request, env);
   return Boolean(user?.canDelete);
 }
 
-function canViewStats(request: Request, env: Env): boolean {
-  return canDeleteObjects(request, env);
+async function canUploadObjects(request: Request, env: Env): Promise<boolean> {
+  if (!isEnabled(env.ALLOW_UPLOADS, true)) return false;
+
+  const users = getConfiguredAuthUsers(env);
+  if (users.length === 0) return true;
+
+  const user = await getCurrentUser(request, env);
+  return Boolean(user?.canDelete || user?.canUpload);
 }
 
-function getCurrentUser(request: Request, env: Env): AuthUser | null {
-  const users = getAuthUsers(env);
+async function canViewStats(request: Request, env: Env): Promise<boolean> {
+  const users = getConfiguredAuthUsers(env);
+  if (users.length === 0) return true;
+
+  const user = await getCurrentUser(request, env);
+  return Boolean(user?.canDelete || user?.canViewStats);
+}
+
+async function getCurrentUser(request: Request, env: Env): Promise<AuthUser | null> {
+  const users = getConfiguredAuthUsers(env);
   if (users.length === 0) {
     return {
+      canChangePassword: true,
       canDelete: isEnabled(env.ALLOW_DELETES, true),
+      canUpload: isEnabled(env.ALLOW_UPLOADS, true),
+      canViewStats: isEnabled(env.ALLOW_DELETES, true),
       username: "anonymous",
       token: "",
     };
@@ -2608,13 +2788,15 @@ function getCurrentUser(request: Request, env: Env): AuthUser | null {
   const authorization = request.headers.get("authorization");
   if (authorization?.startsWith("Bearer ")) {
     const token = authorization.slice("Bearer ".length).trim();
-    const user = users.find((candidate) => candidate.token === token);
-    if (user) return user;
+    for (const candidate of users) {
+      const user = await getResolvedAuthUser(env, candidate.username);
+      if (user?.token === token) return user;
+    }
   }
 
   const cookies = parseCookies(request.headers.get("cookie") ?? "");
   const cookieUser = parseAuthCookie(cookies[SESSION_COOKIE_NAME] ?? cookies[LEGACY_COOKIE_NAME]);
-  return cookieUser ? authenticateUser(users, cookieUser.username, cookieUser.token) : null;
+  return cookieUser ? authenticateUser(env, cookieUser.username, cookieUser.token) : null;
 }
 
 function unauthorizedResponse(request: Request, url: URL): Response {
@@ -2684,14 +2866,20 @@ function parseAuthCookie(value: string | undefined): AuthUser | null {
     const parsed = JSON.parse(value) as Partial<AuthUser>;
     if (typeof parsed.username === "string" && typeof parsed.token === "string") {
       return {
+        canChangePassword: false,
         canDelete: false,
+        canUpload: false,
+        canViewStats: false,
         username: parsed.username,
         token: parsed.token,
       };
     }
   } catch {
     return {
+      canChangePassword: false,
       canDelete: false,
+      canUpload: false,
+      canViewStats: false,
       username: "",
       token: value,
     };
