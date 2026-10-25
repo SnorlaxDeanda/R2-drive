@@ -61,6 +61,12 @@ interface BookInfo {
   title?: string;
 }
 
+interface UploadedBookMetadata extends BookInfo {
+  coverContentType?: string;
+  coverFileName?: string;
+  fileName: string;
+}
+
 interface AuthUser {
   canChangePassword: boolean;
   canDelete: boolean;
@@ -333,12 +339,19 @@ async function uploadObjects(request: Request, env: Env): Promise<Response> {
   const form = await request.formData();
   const prefix = normalizePrefix(form.get("prefix"));
   const files = (form.getAll("files") as unknown[]).filter(isFileWithName);
+  const uploadedBookMetadata = parseUploadedBookMetadata(form.get("bookMetadata"));
+  const coverFiles = new Map(
+    (form.getAll("coverFiles") as unknown[])
+      .filter(isFileWithName)
+      .map((file) => [file.name, file]),
+  );
 
   if (files.length === 0) {
     return json({ error: "No files were uploaded" }, 400);
   }
 
   const uploaded: FileEntry[] = [];
+  const uploadedKeysByName = new Map<string, string>();
 
   for (const file of files) {
     const key = `${prefix}${normalizeObjectName(file.name)}`;
@@ -360,6 +373,12 @@ async function uploadObjects(request: Request, env: Env): Promise<Response> {
       contentType: file.type || "application/octet-stream",
       etag: object.httpEtag,
     });
+    uploadedKeysByName.set(file.name, key);
+  }
+
+  const metadataUpdates = await storeUploadedBookMetadata(env, uploadedBookMetadata, uploadedKeysByName, coverFiles);
+  if (Object.keys(metadataUpdates).length > 0) {
+    await mergeBookMetadata(env, metadataUpdates);
   }
 
   return json({ uploaded }, 201);
@@ -1559,8 +1578,43 @@ async function renderExplorer(request: Request, env: Env): Promise<string> {
     async function uploadFiles(files) {
       if (!appConfig.allowUploads || files.length === 0) return;
       const form = new FormData();
+      const bookMetadata = [];
       form.append("prefix", state.prefix);
       for (const file of files) form.append("files", file);
+
+      setStatus("Reading book metadata...");
+
+      for (const file of files) {
+        if (!isEpubFile(file)) continue;
+
+        try {
+          const metadata = await extractEpubMetadata(file);
+          if (!metadata) continue;
+
+          if (metadata.coverBlob) {
+            const extension = metadata.coverExtension || extensionFromContentType(metadata.coverContentType) || "jpg";
+            const coverFileName = cleanFilename(file.name.replace(/\\.epub$/i, "")) + "." + extension;
+            form.append("coverFiles", metadata.coverBlob, coverFileName);
+            metadata.coverFileName = coverFileName;
+          }
+
+          delete metadata.coverBlob;
+          bookMetadata.push({
+            author: metadata.author,
+            coverContentType: metadata.coverContentType,
+            coverFileName: metadata.coverFileName,
+            description: metadata.description,
+            fileName: file.name,
+            title: metadata.title
+          });
+        } catch (error) {
+          console.warn("Could not extract EPUB metadata for", file.name, error);
+        }
+      }
+
+      if (bookMetadata.length > 0) {
+        form.append("bookMetadata", JSON.stringify(bookMetadata));
+      }
 
       setStatus("Uploading " + files.length + " file" + (files.length === 1 ? "" : "s") + "...");
 
@@ -1573,6 +1627,226 @@ async function renderExplorer(request: Request, env: Env): Promise<string> {
       } catch (error) {
         setStatus(error.message || "Upload failed.");
       }
+    }
+
+    function isEpubFile(file) {
+      return file.name.toLowerCase().endsWith(".epub");
+    }
+
+    async function extractEpubMetadata(file) {
+      const zip = await readZip(file);
+      const containerText = await zip.text("META-INF/container.xml");
+      if (!containerText) return null;
+
+      const containerXml = parseXml(containerText);
+      const rootfile = firstElementByLocalName(containerXml, "rootfile");
+      const opfPath = rootfile?.getAttribute("full-path");
+      if (!opfPath) return null;
+
+      const opfText = await zip.text(opfPath);
+      if (!opfText) return null;
+
+      const opfXml = parseXml(opfText);
+      const metadata = {
+        author: firstTextByLocalName(opfXml, "creator"),
+        description: firstTextByLocalName(opfXml, "description"),
+        title: firstTextByLocalName(opfXml, "title")
+      };
+
+      const cover = await extractEpubCover(zip, opfXml, opfPath);
+      if (cover) {
+        metadata.coverBlob = cover.blob;
+        metadata.coverContentType = cover.contentType;
+        metadata.coverExtension = cover.extension;
+      }
+
+      return metadata;
+    }
+
+    async function extractEpubCover(zip, opfXml, opfPath) {
+      const item = findCoverManifestItem(opfXml);
+      const href = item?.getAttribute("href");
+      if (!href) return null;
+
+      const coverPath = joinZipPath(dirname(opfPath), href);
+      const bytes = await zip.bytes(coverPath);
+      if (!bytes) return null;
+
+      const contentType = item.getAttribute("media-type") || contentTypeFromPath(href);
+      return {
+        blob: new Blob([bytes], { type: contentType }),
+        contentType,
+        extension: extensionFromPath(href) || extensionFromContentType(contentType)
+      };
+    }
+
+    function findCoverManifestItem(opfXml) {
+      const items = Array.from(opfXml.getElementsByTagName("*"))
+        .filter((node) => node.localName === "item");
+
+      const propertyCover = items.find((item) =>
+        (item.getAttribute("properties") || "").split(/\\s+/).includes("cover-image")
+      );
+      if (propertyCover) return propertyCover;
+
+      const metas = Array.from(opfXml.getElementsByTagName("*"))
+        .filter((node) => node.localName === "meta");
+      const coverMeta = metas.find((meta) => meta.getAttribute("name") === "cover");
+      const coverId = coverMeta?.getAttribute("content");
+      if (coverId) {
+        const itemById = items.find((item) => item.getAttribute("id") === coverId);
+        if (itemById) return itemById;
+      }
+
+      return items.find((item) => (item.getAttribute("media-type") || "").startsWith("image/")) || null;
+    }
+
+    async function readZip(file) {
+      const buffer = await file.arrayBuffer();
+      const view = new DataView(buffer);
+      const entries = readZipEntries(buffer, view);
+
+      return {
+        async bytes(path) {
+          const entry = entries.get(normalizeZipPath(path));
+          if (!entry) return null;
+          return inflateZipEntry(buffer, entry);
+        },
+        async text(path) {
+          const bytes = await this.bytes(path);
+          return bytes ? new TextDecoder("utf-8").decode(bytes) : "";
+        }
+      };
+    }
+
+    function readZipEntries(buffer, view) {
+      const eocdOffset = findEndOfCentralDirectory(view);
+      if (eocdOffset < 0) throw new Error("Invalid EPUB archive");
+
+      const entryCount = view.getUint16(eocdOffset + 10, true);
+      const centralDirectoryOffset = view.getUint32(eocdOffset + 16, true);
+      const entries = new Map();
+      let offset = centralDirectoryOffset;
+
+      for (let index = 0; index < entryCount; index += 1) {
+        if (view.getUint32(offset, true) !== 0x02014b50) break;
+
+        const flags = view.getUint16(offset + 8, true);
+        const method = view.getUint16(offset + 10, true);
+        const compressedSize = view.getUint32(offset + 20, true);
+        const uncompressedSize = view.getUint32(offset + 24, true);
+        const nameLength = view.getUint16(offset + 28, true);
+        const extraLength = view.getUint16(offset + 30, true);
+        const commentLength = view.getUint16(offset + 32, true);
+        const localHeaderOffset = view.getUint32(offset + 42, true);
+        const nameBytes = new Uint8Array(buffer, offset + 46, nameLength);
+        const name = decodeZipName(nameBytes, flags);
+
+        entries.set(normalizeZipPath(name), {
+          compressedSize,
+          localHeaderOffset,
+          method,
+          uncompressedSize
+        });
+
+        offset += 46 + nameLength + extraLength + commentLength;
+      }
+
+      return entries;
+    }
+
+    function findEndOfCentralDirectory(view) {
+      const minOffset = Math.max(0, view.byteLength - 65557);
+      for (let offset = view.byteLength - 22; offset >= minOffset; offset -= 1) {
+        if (view.getUint32(offset, true) === 0x06054b50) return offset;
+      }
+      return -1;
+    }
+
+    function decodeZipName(bytes, flags) {
+      const encoding = flags & 0x0800 ? "utf-8" : "utf-8";
+      return new TextDecoder(encoding).decode(bytes);
+    }
+
+    async function inflateZipEntry(buffer, entry) {
+      const view = new DataView(buffer);
+      const localOffset = entry.localHeaderOffset;
+      if (view.getUint32(localOffset, true) !== 0x04034b50) return null;
+
+      const nameLength = view.getUint16(localOffset + 26, true);
+      const extraLength = view.getUint16(localOffset + 28, true);
+      const dataOffset = localOffset + 30 + nameLength + extraLength;
+      const compressed = new Uint8Array(buffer, dataOffset, entry.compressedSize);
+
+      if (entry.method === 0) return compressed;
+      if (entry.method !== 8) throw new Error("Unsupported EPUB compression method");
+      if (!("DecompressionStream" in globalThis)) throw new Error("This browser cannot extract compressed EPUB metadata");
+
+      const stream = new Blob([compressed]).stream().pipeThrough(new DecompressionStream("deflate-raw"));
+      return new Uint8Array(await new Response(stream).arrayBuffer());
+    }
+
+    function parseXml(value) {
+      return new DOMParser().parseFromString(value, "application/xml");
+    }
+
+    function firstElementByLocalName(xml, localName) {
+      return Array.from(xml.getElementsByTagName("*")).find((node) => node.localName === localName) || null;
+    }
+
+    function firstTextByLocalName(xml, localName) {
+      const element = firstElementByLocalName(xml, localName);
+      return element?.textContent?.trim() || "";
+    }
+
+    function dirname(path) {
+      const index = path.lastIndexOf("/");
+      return index >= 0 ? path.slice(0, index) : "";
+    }
+
+    function joinZipPath(base, href) {
+      const combined = base ? base + "/" + href : href;
+      const parts = [];
+      for (const part of combined.split("/")) {
+        if (!part || part === ".") continue;
+        if (part === "..") parts.pop();
+        else parts.push(part);
+      }
+      return parts.join("/");
+    }
+
+    function normalizeZipPath(path) {
+      return path.replace(/^\\/+/, "");
+    }
+
+    function cleanFilename(value) {
+      return value
+        .trim()
+        .toLowerCase()
+        .replace(/[^a-z0-9._-]+/g, "-")
+        .replace(/^-+|-+$/g, "") || "book";
+    }
+
+    function extensionFromPath(value) {
+      const extension = value.split("?")[0].split("#")[0].split(".").pop();
+      return extension ? extension.toLowerCase().replace(/[^a-z0-9]/g, "") : "";
+    }
+
+    function contentTypeFromPath(value) {
+      const extension = extensionFromPath(value);
+      if (extension === "jpg" || extension === "jpeg") return "image/jpeg";
+      if (extension === "png") return "image/png";
+      if (extension === "gif") return "image/gif";
+      if (extension === "webp") return "image/webp";
+      return "application/octet-stream";
+    }
+
+    function extensionFromContentType(value) {
+      if (value === "image/jpeg") return "jpg";
+      if (value === "image/png") return "png";
+      if (value === "image/gif") return "gif";
+      if (value === "image/webp") return "webp";
+      return "";
     }
 
     async function createFolder() {
@@ -2353,6 +2627,135 @@ async function getBookMetadata(env: Env): Promise<Map<string, BookInfo>> {
   }
 }
 
+function parseUploadedBookMetadata(value: unknown): UploadedBookMetadata[] {
+  if (typeof value !== "string" || !value.trim()) return [];
+
+  try {
+    const parsed = JSON.parse(value) as unknown;
+    if (!Array.isArray(parsed)) return [];
+
+    return parsed
+      .map(parseUploadedBookMetadataEntry)
+      .filter((entry): entry is UploadedBookMetadata => entry !== null);
+  } catch {
+    return [];
+  }
+}
+
+function parseUploadedBookMetadataEntry(value: unknown): UploadedBookMetadata | null {
+  if (!value || Array.isArray(value) || typeof value !== "object") return null;
+
+  const raw = value as Record<string, unknown>;
+  if (typeof raw.fileName !== "string" || !raw.fileName.trim()) return null;
+
+  const entry: UploadedBookMetadata = {
+    fileName: raw.fileName,
+  };
+
+  if (typeof raw.author === "string" && raw.author.trim()) entry.author = raw.author.trim();
+  if (typeof raw.coverContentType === "string" && raw.coverContentType.trim()) entry.coverContentType = raw.coverContentType.trim();
+  if (typeof raw.coverFileName === "string" && raw.coverFileName.trim()) entry.coverFileName = raw.coverFileName.trim();
+  if (typeof raw.description === "string" && raw.description.trim()) entry.description = raw.description.trim();
+  if (typeof raw.title === "string" && raw.title.trim()) entry.title = raw.title.trim();
+
+  return entry;
+}
+
+async function storeUploadedBookMetadata(
+  env: Env,
+  entries: UploadedBookMetadata[],
+  uploadedKeysByName: Map<string, string>,
+  coverFiles: Map<string, File>,
+): Promise<Record<string, BookInfo>> {
+  const updates: Record<string, BookInfo> = {};
+
+  for (const entry of entries) {
+    const bookKey = uploadedKeysByName.get(entry.fileName);
+    if (!bookKey) continue;
+
+    const info: BookInfo = {};
+    if (entry.author) info.author = entry.author;
+    if (entry.description) info.description = entry.description;
+    if (entry.title) info.title = entry.title;
+
+    if (entry.coverFileName) {
+      const coverFile = coverFiles.get(entry.coverFileName);
+      if (coverFile) {
+        const coverKey = `covers/${normalizeObjectName(entry.coverFileName)}`;
+        if (!isInternalKey(coverKey)) {
+          const contentType = entry.coverContentType || coverFile.type || contentTypeFromFilename(coverFile.name);
+          await env.BUCKET.put(coverKey, coverFile.stream(), {
+            httpMetadata: {
+              contentType,
+            },
+          });
+          info.coverKey = coverKey;
+        }
+      }
+    }
+
+    if (Object.keys(info).length > 0) {
+      updates[bookKey] = info;
+    }
+  }
+
+  return updates;
+}
+
+async function mergeBookMetadata(env: Env, updates: Record<string, BookInfo>): Promise<void> {
+  if (Object.keys(updates).length === 0) return;
+
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    const existing = await env.BUCKET.get(BOOK_METADATA_KEY);
+    const document = existing ? parseBookMetadataDocument(await existing.text()) : { books: {} };
+
+    document.books = {
+      ...document.books,
+      ...Object.fromEntries(
+        Object.entries(updates).map(([key, value]) => [
+          key,
+          {
+            ...(document.books[key] ?? {}),
+            ...value,
+          },
+        ]),
+      ),
+    };
+
+    const putOptions = {
+      httpMetadata: {
+        contentType: "application/json",
+      },
+      ...(existing ? { onlyIf: { etagMatches: existing.etag } } : {}),
+    };
+
+    const result = await env.BUCKET.put(BOOK_METADATA_KEY, JSON.stringify(document, null, 2), putOptions);
+    if (result) return;
+  }
+
+  throw new Error("Could not update book metadata. Please try the upload again.");
+}
+
+function parseBookMetadataDocument(value: string): { books: Record<string, BookInfo> } {
+  try {
+    const parsed = JSON.parse(value) as unknown;
+    if (!parsed || Array.isArray(parsed) || typeof parsed !== "object") return { books: {} };
+
+    const raw = parsed as Record<string, unknown>;
+    const source = raw.books && typeof raw.books === "object" && !Array.isArray(raw.books) ? raw.books : raw;
+    const books: Record<string, BookInfo> = {};
+
+    for (const [key, metadata] of Object.entries(source)) {
+      const info = parseBookInfo(metadata);
+      if (key.trim() && info) books[key] = info;
+    }
+
+    return { books };
+  } catch {
+    return { books: {} };
+  }
+}
+
 function parseBookMetadata(value: unknown): Map<string, BookInfo> {
   const map = new Map<string, BookInfo>();
   const source = unwrapBookMetadata(value);
@@ -2924,6 +3327,23 @@ function safeJson(value: unknown): string {
 
 function safeHeaderFilename(value: string): string {
   return value.replace(/[\\"]/g, "_");
+}
+
+function contentTypeFromFilename(value: string): string {
+  const extension = value.split(".").pop()?.toLowerCase();
+  switch (extension) {
+    case "jpg":
+    case "jpeg":
+      return "image/jpeg";
+    case "png":
+      return "image/png";
+    case "gif":
+      return "image/gif";
+    case "webp":
+      return "image/webp";
+    default:
+      return "application/octet-stream";
+  }
 }
 
 function truncate(value: string, maxLength: number): string | undefined {
