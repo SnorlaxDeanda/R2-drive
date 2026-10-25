@@ -62,8 +62,10 @@ interface BookInfo {
 }
 
 interface AuthUser {
+  canChangePassword: boolean;
   canDelete: boolean;
   canUpload: boolean;
+  canViewStats: boolean;
   username: string;
   token: string;
 }
@@ -446,6 +448,10 @@ async function changePassword(request: Request, env: Env): Promise<Response> {
     return json({ error: "Authentication required" }, 401);
   }
 
+  if (!user.canChangePassword) {
+    return json({ error: "Password changes are disabled for this user" }, 403);
+  }
+
   const body = await request.json<{ currentPassword?: string; newPassword?: string }>();
   const currentPassword = String(body.currentPassword ?? "").trim();
   const newPassword = String(body.newPassword ?? "").trim();
@@ -478,6 +484,7 @@ async function changePassword(request: Request, env: Env): Promise<Response> {
 
 async function renderExplorer(request: Request, env: Env): Promise<string> {
   const title = env.EXPLORER_TITLE || "R2 Drive";
+  const currentUser = await getCurrentUser(request, env);
   const canUseUploads = await canUploadObjects(request, env);
   const canUseDeletes = await canDeleteObjects(request, env);
   const canUseStats = await canViewStats(request, env);
@@ -1114,7 +1121,7 @@ async function renderExplorer(request: Request, env: Env): Promise<string> {
       <div class="actions">
         ${canUseStats ? '<a class="button" href="/stats">Stats</a>' : ""}
         <button class="button" id="refreshButton" type="button">Refresh</button>
-        ${hasAuth(env) ? '<button class="button" id="passwordButton" type="button">Change password</button>' : ""}
+        ${hasAuth(env) && currentUser?.canChangePassword ? '<button class="button" id="passwordButton" type="button">Change password</button>' : ""}
         ${canUseUploads ? '<button class="button" id="newFolderButton" type="button">New folder</button>' : ""}
         ${canUseUploads ? '<button class="button primary" id="uploadButton" type="button">Upload files</button>' : ""}
         ${hasAuth(env) ? '<a class="button" href="/logout">Sign out</a>' : ""}
@@ -2612,8 +2619,10 @@ function getConfiguredAuthUsers(env: Env): AuthUser[] {
 
   if (env.AUTH_TOKEN?.trim()) {
     users.push({
+      canChangePassword: true,
       canDelete: isEnabled(env.ALLOW_DELETES, true),
       canUpload: isEnabled(env.ALLOW_UPLOADS, true),
+      canViewStats: isEnabled(env.ALLOW_DELETES, true),
       username: "default",
       token: env.AUTH_TOKEN.trim(),
     });
@@ -2639,8 +2648,10 @@ function parseAuthUsers(value: string): AuthUser[] {
       return trimmed.split(",").map((pair) => {
         const separator = pair.indexOf(":");
         return {
+          canChangePassword: true,
           canDelete: false,
           canUpload: false,
+          canViewStats: false,
           username: pair.slice(0, separator).trim(),
           token: pair.slice(separator + 1).trim(),
         };
@@ -2654,8 +2665,10 @@ function parseAuthUsers(value: string): AuthUser[] {
 function parseAuthUser(username: string, value: unknown): AuthUser | null {
   if (typeof value === "string") {
     return {
+      canChangePassword: true,
       canDelete: false,
       canUpload: false,
+      canViewStats: false,
       username: username.trim(),
       token: value.trim(),
     };
@@ -2665,14 +2678,16 @@ function parseAuthUser(username: string, value: unknown): AuthUser | null {
     return null;
   }
 
-  const config = value as { canDelete?: unknown; canUpload?: unknown; token?: unknown };
+  const config = value as { canChangePassword?: unknown; canDelete?: unknown; canUpload?: unknown; canViewStats?: unknown; token?: unknown };
   if (typeof config.token !== "string") {
     return null;
   }
 
   return {
+    canChangePassword: config.canChangePassword !== false,
     canDelete: config.canDelete === true,
     canUpload: config.canUpload === true,
+    canViewStats: config.canViewStats === true,
     username: username.trim(),
     token: config.token.trim(),
   };
@@ -2750,15 +2765,21 @@ async function canUploadObjects(request: Request, env: Env): Promise<boolean> {
 }
 
 async function canViewStats(request: Request, env: Env): Promise<boolean> {
-  return canDeleteObjects(request, env);
+  const users = getConfiguredAuthUsers(env);
+  if (users.length === 0) return true;
+
+  const user = await getCurrentUser(request, env);
+  return Boolean(user?.canDelete || user?.canViewStats);
 }
 
 async function getCurrentUser(request: Request, env: Env): Promise<AuthUser | null> {
   const users = getConfiguredAuthUsers(env);
   if (users.length === 0) {
     return {
+      canChangePassword: true,
       canDelete: isEnabled(env.ALLOW_DELETES, true),
       canUpload: isEnabled(env.ALLOW_UPLOADS, true),
+      canViewStats: isEnabled(env.ALLOW_DELETES, true),
       username: "anonymous",
       token: "",
     };
@@ -2845,16 +2866,20 @@ function parseAuthCookie(value: string | undefined): AuthUser | null {
     const parsed = JSON.parse(value) as Partial<AuthUser>;
     if (typeof parsed.username === "string" && typeof parsed.token === "string") {
       return {
+        canChangePassword: false,
         canDelete: false,
         canUpload: false,
+        canViewStats: false,
         username: parsed.username,
         token: parsed.token,
       };
     }
   } catch {
     return {
+      canChangePassword: false,
       canDelete: false,
       canUpload: false,
+      canViewStats: false,
       username: "",
       token: value,
     };
