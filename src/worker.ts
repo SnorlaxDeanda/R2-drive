@@ -68,10 +68,12 @@ interface UploadedBookMetadata extends BookInfo {
 }
 
 interface AuthUser {
+  accessAuthenticated?: boolean;
   canChangePassword: boolean;
   canDelete: boolean;
   canUpload: boolean;
   canViewStats: boolean;
+  email?: string;
   username: string;
   token: string;
 }
@@ -92,6 +94,10 @@ export default {
     try {
       if (url.pathname === "/logout") {
         return redirectWithCookie("/login", clearAuthCookie(url));
+      }
+
+      if (getAccessEmail(request) && url.pathname === "/login") {
+        return redirectNoStore("/files");
       }
 
       if (hasAuth(env) && url.pathname === "/login") {
@@ -598,6 +604,15 @@ async function renderExplorer(request: Request, env: Env): Promise<string> {
       flex-wrap: wrap;
       gap: 10px;
       justify-content: flex-end;
+    }
+    .access-user {
+      align-items: center;
+      color: rgba(255, 255, 255, 0.9);
+      display: inline-flex;
+      font-size: 13px;
+      font-weight: 700;
+      min-height: 44px;
+      overflow-wrap: anywhere;
     }
     .button {
       align-items: center;
@@ -1138,12 +1153,13 @@ async function renderExplorer(request: Request, env: Env): Promise<string> {
         </div>
       </div>
       <div class="actions">
+        ${currentUser?.accessAuthenticated ? `<span class="access-user">${escapeHtml(currentUser.email || currentUser.username)}</span>` : ""}
         ${canUseStats ? '<a class="button" href="/stats">Stats</a>' : ""}
         <button class="button" id="refreshButton" type="button">Refresh</button>
-        ${hasAuth(env) && currentUser?.canChangePassword ? '<button class="button" id="passwordButton" type="button">Change password</button>' : ""}
+        ${hasAuth(env) && !currentUser?.accessAuthenticated && currentUser?.canChangePassword ? '<button class="button" id="passwordButton" type="button">Change password</button>' : ""}
         ${canUseUploads ? '<button class="button" id="newFolderButton" type="button">New folder</button>' : ""}
         ${canUseUploads ? '<button class="button primary" id="uploadButton" type="button">Upload files</button>' : ""}
-        ${hasAuth(env) ? '<a class="button" href="/logout">Sign out</a>' : ""}
+        ${hasAuth(env) && !currentUser?.accessAuthenticated ? '<a class="button" href="/logout">Sign out</a>' : ""}
       </div>
     </header>
 
@@ -3097,16 +3113,58 @@ function parseAuthUser(username: string, value: unknown): AuthUser | null {
 }
 
 async function getResolvedAuthUser(env: Env, username: string): Promise<AuthUser | null> {
-  const configured = getConfiguredAuthUsers(env).find((user) => user.username === username);
+  const configured = findConfiguredAuthUser(getConfiguredAuthUsers(env), username);
   if (!configured) return null;
 
-  const override = await getPasswordOverride(env, username);
+  const override = await getPasswordOverride(env, configured.username);
   if (!override) return configured;
 
   return {
     ...configured,
     token: override.token,
   };
+}
+
+function findConfiguredAuthUser(users: AuthUser[], username: string): AuthUser | undefined {
+  const exact = users.find((user) => user.username === username);
+  if (exact) return exact;
+
+  if (username.includes("@")) {
+    const normalized = username.toLowerCase();
+    return users.find((user) => user.username.toLowerCase() === normalized);
+  }
+
+  return undefined;
+}
+
+async function getAccessUser(request: Request, env: Env): Promise<AuthUser | null> {
+  const email = getAccessEmail(request);
+  if (!email) return null;
+
+  const configured = await getResolvedAuthUser(env, email);
+  if (configured) {
+    return {
+      ...configured,
+      accessAuthenticated: true,
+      canChangePassword: false,
+      email,
+    };
+  }
+
+  return {
+    accessAuthenticated: true,
+    canChangePassword: false,
+    canDelete: false,
+    canUpload: false,
+    canViewStats: false,
+    email,
+    username: email,
+    token: "",
+  };
+}
+
+function getAccessEmail(request: Request): string {
+  return (request.headers.get("Cf-Access-Authenticated-User-Email") ?? "").trim();
 }
 
 async function getPasswordOverride(env: Env, username: string): Promise<{ token: string } | null> {
@@ -3150,6 +3208,11 @@ async function isAuthorized(request: Request, env: Env): Promise<boolean> {
 async function canDeleteObjects(request: Request, env: Env): Promise<boolean> {
   if (!isEnabled(env.ALLOW_DELETES, true)) return false;
 
+  if (getAccessEmail(request)) {
+    const user = await getCurrentUser(request, env);
+    return Boolean(user?.canDelete);
+  }
+
   const users = getConfiguredAuthUsers(env);
   if (users.length === 0) return true;
 
@@ -3160,6 +3223,11 @@ async function canDeleteObjects(request: Request, env: Env): Promise<boolean> {
 async function canUploadObjects(request: Request, env: Env): Promise<boolean> {
   if (!isEnabled(env.ALLOW_UPLOADS, true)) return false;
 
+  if (getAccessEmail(request)) {
+    const user = await getCurrentUser(request, env);
+    return Boolean(user?.canDelete || user?.canUpload);
+  }
+
   const users = getConfiguredAuthUsers(env);
   if (users.length === 0) return true;
 
@@ -3168,6 +3236,11 @@ async function canUploadObjects(request: Request, env: Env): Promise<boolean> {
 }
 
 async function canViewStats(request: Request, env: Env): Promise<boolean> {
+  if (getAccessEmail(request)) {
+    const user = await getCurrentUser(request, env);
+    return Boolean(user?.canDelete || user?.canViewStats);
+  }
+
   const users = getConfiguredAuthUsers(env);
   if (users.length === 0) return true;
 
@@ -3176,6 +3249,9 @@ async function canViewStats(request: Request, env: Env): Promise<boolean> {
 }
 
 async function getCurrentUser(request: Request, env: Env): Promise<AuthUser | null> {
+  const accessUser = await getAccessUser(request, env);
+  if (accessUser) return accessUser;
+
   const users = getConfiguredAuthUsers(env);
   if (users.length === 0) {
     return {
