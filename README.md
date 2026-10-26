@@ -144,6 +144,40 @@ For a single shared token, the app still supports the older `AUTH_TOKEN` secret:
 npx wrangler secret put AUTH_TOKEN
 ```
 
+### Cloudflare Access / Zero Trust
+
+If you put the Worker behind Cloudflare Access, the app reads this header:
+
+```txt
+Cf-Access-Authenticated-User-Email
+```
+
+When that header is present, the user is treated as signed in by email and the
+password login page is bypassed.
+
+To grant permissions to an Access user, add their email address as the
+`AUTH_USERS` key:
+
+```json
+{
+  "reader@example.com": {
+    "token": "unused-with-access",
+    "canUpload": true
+  },
+  "admin@example.com": {
+    "token": "unused-with-access",
+    "canUpload": true,
+    "canViewStats": true,
+    "canDelete": true
+  }
+}
+```
+
+If an Access-authenticated email is not listed in `AUTH_USERS`, that user gets
+read-only access: browse, open, and download only. Access-authenticated users do
+not see the password change or logout controls because Cloudflare Access owns the
+login session.
+
 Signed-in users can change their own password from the explorer. Changed
 passwords are stored privately in R2 under `_auth/users/`, which is hidden from
 normal browsing and blocked from generic file access. The `AUTH_USERS` secret
