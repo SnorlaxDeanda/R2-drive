@@ -8,7 +8,7 @@ download objects, and delete objects from a web UI.
 
 - Folder-style navigation using R2 prefixes
 - File table with name, last modified time, size, and content type
-- Drag-and-drop or file-picker uploads
+- Drag-and-drop or file-picker uploads, including a whole folder and its subfolders
 - New folder creation using hidden `.keep` marker objects
 - Open and download links for objects
 - Optional delete support
@@ -330,6 +330,6 @@ The UI uses these same-origin routes:
 - `GET /api/stats` returns aggregated stats for admin/delete-capable users.
 - `GET /api/object?key=<key>` opens an object.
 - `GET /api/object?key=<key>&download=1` downloads an object.
-- `POST /api/upload` uploads multipart form files using `prefix` and `files`.
+- `POST /api/upload` uploads multipart form files using `prefix` and `files`. Optional `paths` values keep folder structure, one path for each file.
 - `POST /api/folder` creates a folder marker from JSON `{ "prefix", "name" }`.
 - `DELETE /api/object?key=<key>` deletes an object.

@@ -345,6 +345,7 @@ async function uploadObjects(request: Request, env: Env): Promise<Response> {
   const form = await request.formData();
   const prefix = normalizePrefix(form.get("prefix"));
   const files = (form.getAll("files") as unknown[]).filter(isFileWithName);
+  const relativePaths = form.getAll("paths");
   const uploadedBookMetadata = parseUploadedBookMetadata(form.get("bookMetadata"));
   const coverFiles = new Map(
     (form.getAll("coverFiles") as unknown[])
@@ -359,8 +360,18 @@ async function uploadObjects(request: Request, env: Env): Promise<Response> {
   const uploaded: FileEntry[] = [];
   const uploadedKeysByName = new Map<string, string>();
 
-  for (const file of files) {
-    const key = `${prefix}${normalizeObjectName(file.name)}`;
+  for (let index = 0; index < files.length; index += 1) {
+    const file = files[index];
+    const rawPath = relativePaths[index];
+    let relativeName: string;
+    try {
+      relativeName = sanitizeRelativePath(typeof rawPath === "string" && rawPath.trim() ? rawPath : file.name);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "A valid file name is required";
+      return json({ error: message }, 400);
+    }
+
+    const key = `${prefix}${relativeName}`;
     if (isInternalKey(key)) {
       return json({ error: "That file path is reserved for internal app data" }, 400);
     }
@@ -379,7 +390,7 @@ async function uploadObjects(request: Request, env: Env): Promise<Response> {
       contentType: file.type || "application/octet-stream",
       etag: object.httpEtag,
     });
-    uploadedKeysByName.set(file.name, key);
+    uploadedKeysByName.set(relativeName, key);
   }
 
   const metadataUpdates = await storeUploadedBookMetadata(env, uploadedBookMetadata, uploadedKeysByName, coverFiles);
@@ -1159,6 +1170,7 @@ async function renderExplorer(request: Request, env: Env): Promise<string> {
         <button class="button" id="refreshButton" type="button">Refresh</button>
         ${hasAuth(env) && !currentUser?.accessAuthenticated && currentUser?.canChangePassword ? '<button class="button" id="passwordButton" type="button">Change password</button>' : ""}
         ${canUseUploads ? '<button class="button" id="newFolderButton" type="button">New folder</button>' : ""}
+        ${canUseUploads ? '<button class="button" id="uploadFolderButton" type="button">Upload folder</button>' : ""}
         ${canUseUploads ? '<button class="button primary" id="uploadButton" type="button">Upload files</button>' : ""}
         ${hasAuth(env) && !currentUser?.accessAuthenticated ? '<a class="button" href="/logout">Sign out</a>' : ""}
       </div>
@@ -1173,7 +1185,7 @@ async function renderExplorer(request: Request, env: Env): Promise<string> {
         </div>
         <div class="status" id="status"></div>
       </div>
-      <div class="dropzone" id="dropzone">Drop files here to upload to the current folder.</div>
+      <div class="dropzone" id="dropzone">Drop files or folders here to upload into the current folder.</div>
       <div class="table-wrap">
         <table>
           <thead>
@@ -1195,6 +1207,7 @@ async function renderExplorer(request: Request, env: Env): Promise<string> {
     </section>
   </main>
   <input class="hidden" id="fileInput" multiple type="file">
+  <input class="hidden" id="folderInput" directory multiple type="file" webkitdirectory>
 
   <script>
     const appConfig = ${config};
@@ -1213,10 +1226,12 @@ async function renderExplorer(request: Request, env: Env): Promise<string> {
     const loadMoreWrap = document.querySelector("#loadMoreWrap");
     const loadMoreButton = document.querySelector("#loadMoreButton");
     const uploadButton = document.querySelector("#uploadButton");
+    const uploadFolderButton = document.querySelector("#uploadFolderButton");
     const newFolderButton = document.querySelector("#newFolderButton");
     const passwordButton = document.querySelector("#passwordButton");
     const refreshButton = document.querySelector("#refreshButton");
     const fileInput = document.querySelector("#fileInput");
+    const folderInput = document.querySelector("#folderInput");
     const dropzone = document.querySelector("#dropzone");
     const searchInput = document.querySelector("#searchInput");
     const clearSearchButton = document.querySelector("#clearSearch");
@@ -1224,6 +1239,7 @@ async function renderExplorer(request: Request, env: Env): Promise<string> {
 
     if (!appConfig.allowUploads) {
       uploadButton?.classList.add("hidden");
+      uploadFolderButton?.classList.add("hidden");
       newFolderButton?.classList.add("hidden");
       dropzone.classList.add("hidden");
     }
@@ -1247,6 +1263,7 @@ async function renderExplorer(request: Request, env: Env): Promise<string> {
       else loadList({ append: true });
     });
     uploadButton?.addEventListener("click", () => fileInput.click());
+    uploadFolderButton?.addEventListener("click", () => folderInput.click());
     newFolderButton?.addEventListener("click", createFolder);
     passwordButton?.addEventListener("click", changePassword);
 
@@ -1280,6 +1297,10 @@ async function renderExplorer(request: Request, env: Env): Promise<string> {
       uploadFiles(Array.from(fileInput.files || []));
       fileInput.value = "";
     });
+    folderInput.addEventListener("change", () => {
+      uploadFiles(Array.from(folderInput.files || []));
+      folderInput.value = "";
+    });
 
     for (const eventName of ["dragenter", "dragover"]) {
       dropzone.addEventListener(eventName, (event) => {
@@ -1296,7 +1317,7 @@ async function renderExplorer(request: Request, env: Env): Promise<string> {
     }
 
     dropzone.addEventListener("drop", (event) => {
-      uploadFiles(Array.from(event.dataTransfer?.files || []));
+      void filesFromDrop(event.dataTransfer).then((files) => uploadFiles(files));
     });
 
     loadList();
@@ -1593,57 +1614,146 @@ async function renderExplorer(request: Request, env: Env): Promise<string> {
     }
 
     async function uploadFiles(files) {
-      if (!appConfig.allowUploads || files.length === 0) return;
-      const form = new FormData();
-      const bookMetadata = [];
-      form.append("prefix", state.prefix);
-      for (const file of files) form.append("files", file);
+      if (!appConfig.allowUploads) return;
+      const queue = files.filter((file) => !shouldSkipUpload(file));
+      if (queue.length === 0) {
+        setStatus("Nothing to upload.");
+        return;
+      }
 
-      setStatus("Reading book metadata...");
+      let uploaded = 0;
+      let failed = 0;
 
-      for (const file of files) {
-        if (!isEpubFile(file)) continue;
+      for (let index = 0; index < queue.length; index += 1) {
+        const file = queue[index];
+        const relativePath = uploadRelativePath(file);
+        setStatus("Uploading " + (index + 1) + " of " + queue.length + ": " + relativePath);
 
         try {
-          const metadata = await extractEpubMetadata(file);
-          if (!metadata) continue;
-
-          if (metadata.coverBlob) {
-            const extension = metadata.coverExtension || extensionFromContentType(metadata.coverContentType) || "jpg";
-            const coverFileName = cleanFilename(file.name.replace(/\\.epub$/i, "")) + "." + extension;
-            form.append("coverFiles", metadata.coverBlob, coverFileName);
-            metadata.coverFileName = coverFileName;
-          }
-
-          delete metadata.coverBlob;
-          bookMetadata.push({
-            author: metadata.author,
-            coverContentType: metadata.coverContentType,
-            coverFileName: metadata.coverFileName,
-            description: metadata.description,
-            fileName: file.name,
-            title: metadata.title
-          });
+          await uploadOneFile(file, relativePath);
+          uploaded += 1;
         } catch (error) {
-          console.warn("Could not extract EPUB metadata for", file.name, error);
+          failed += 1;
+          console.warn("Upload failed for", relativePath, error);
         }
       }
 
-      if (bookMetadata.length > 0) {
-        form.append("bookMetadata", JSON.stringify(bookMetadata));
+      await loadList();
+      const uploadedLabel = uploaded + " file" + (uploaded === 1 ? "" : "s");
+      setStatus(failed === 0
+        ? "Uploaded " + uploadedLabel + "."
+        : "Uploaded " + uploadedLabel + ". " + failed + " failed.");
+    }
+
+    async function uploadOneFile(file, relativePath) {
+      const form = new FormData();
+      form.append("prefix", state.prefix);
+      form.append("paths", relativePath);
+      form.append("files", file, file.name);
+
+      if (isEpubFile(file)) {
+        try {
+          const metadata = await extractEpubMetadata(file);
+          if (metadata) {
+            if (metadata.coverBlob) {
+              const extension = metadata.coverExtension || extensionFromContentType(metadata.coverContentType) || "jpg";
+              const coverFileName = cleanFilename(relativePath.replace(/\\.epub$/i, "")) + "." + extension;
+              form.append("coverFiles", metadata.coverBlob, coverFileName);
+              metadata.coverFileName = coverFileName;
+            }
+
+            delete metadata.coverBlob;
+            form.append("bookMetadata", JSON.stringify([{
+              author: metadata.author,
+              coverContentType: metadata.coverContentType,
+              coverFileName: metadata.coverFileName,
+              description: metadata.description,
+              fileName: relativePath,
+              title: metadata.title
+            }]));
+          }
+        } catch (error) {
+          console.warn("Could not extract EPUB metadata for", relativePath, error);
+        }
       }
 
-      setStatus("Uploading " + files.length + " file" + (files.length === 1 ? "" : "s") + "...");
+      await api("/api/upload", {
+        body: form,
+        method: "POST"
+      });
+    }
 
-      try {
-        await api("/api/upload", {
-          body: form,
-          method: "POST"
+    async function filesFromDrop(dataTransfer) {
+      const items = Array.from(dataTransfer?.items || []);
+      const entries = items
+        .map((item) => (item.webkitGetAsEntry ? item.webkitGetAsEntry() : null))
+        .filter(Boolean);
+
+      if (entries.length === 0) return Array.from(dataTransfer?.files || []);
+
+      const groups = await Promise.all(entries.map((entry) => readDroppedEntry(entry)));
+      return groups.flat();
+    }
+
+    function readDroppedEntry(entry) {
+      if (entry.isFile) {
+        return new Promise((resolve) => {
+          entry.file((file) => {
+            const relativePath = String(entry.fullPath || file.name).replace(/^\\/+/, "");
+            resolve([assignRelativePath(file, relativePath)]);
+          }, () => resolve([]));
         });
-        await loadList();
-      } catch (error) {
-        setStatus(error.message || "Upload failed.");
       }
+
+      if (!entry.isDirectory || !entry.createReader) return Promise.resolve([]);
+
+      const reader = entry.createReader();
+      return new Promise((resolve) => {
+        const files = [];
+        const readBatch = () => {
+          reader.readEntries(async (children) => {
+            if (!children.length) {
+              resolve(files);
+              return;
+            }
+            for (const child of children) {
+              files.push(...await readDroppedEntry(child));
+            }
+            readBatch();
+          }, () => resolve(files));
+        };
+        readBatch();
+      });
+    }
+
+    function assignRelativePath(file, relativePath) {
+      try {
+        Object.defineProperty(file, "relativePath", { configurable: true, value: relativePath });
+      } catch {
+        file.relativePath = relativePath;
+      }
+      return file;
+    }
+
+    function uploadRelativePath(file) {
+      const raw = file.relativePath || file.webkitRelativePath || file.name || "";
+      const parts = String(raw).split(/[/\\\\]/);
+      const kept = [];
+      for (const part of parts) {
+        if (!part || part === "." || part === "..") continue;
+        kept.push(part);
+      }
+      return kept.join("/");
+    }
+
+    function shouldSkipUpload(file) {
+      const relativePath = uploadRelativePath(file).toLowerCase();
+      const base = relativePath.split("/").pop() || "";
+      return !relativePath
+        || relativePath.includes("__macosx/")
+        || base === ".ds_store"
+        || base === "thumbs.db"
+        || base === "desktop.ini";
     }
 
     function isEpubFile(file) {
@@ -2700,6 +2810,25 @@ function normalizeKey(value: string | null): string {
     throw new Error("A valid object key is required");
   }
   return key;
+}
+
+function sanitizeRelativePath(value: string): string {
+  const parts = value.replace(/\\/g, "/").split("/");
+  const kept: string[] = [];
+
+  for (const part of parts) {
+    if (!part || part === ".") continue;
+    if (part === ".." || part.includes("\0")) {
+      throw new Error("A valid file name is required");
+    }
+    kept.push(part);
+  }
+
+  if (kept.length === 0) {
+    throw new Error("A valid file name is required");
+  }
+
+  return kept.join("/");
 }
 
 function normalizeObjectName(value: string): string {
