@@ -1522,7 +1522,7 @@ async function renderExplorer(request: Request, env: Env): Promise<string> {
       if (book.description) {
         const description = document.createElement("div");
         description.className = "book-description";
-        description.textContent = book.description;
+        description.textContent = plainTextFromHtml(book.description);
         details.appendChild(description);
       }
 
@@ -1838,9 +1838,10 @@ async function renderExplorer(request: Request, env: Env): Promise<string> {
       if (!looksLikeHtml(text)) return normalizePlainText(text);
 
       text = text.replace(/<!--[\\s\\S]*?-->/g, "");
+      text = text.replace(/<\\s*(\\/?)\\s*/g, "<$1");
       text = text.replace(/<(script|style)\\b[^>]*>[\\s\\S]*?<\\/\\1>/gi, "");
-      text = text.replace(/<br\\s*\\/?>/gi, "\\n");
-      text = text.replace(/<\\/(p|div|h[1-6]|li|tr|blockquote|section|article|ul|ol|header|footer|dd|dt)>/gi, "\\n");
+      text = text.replace(/<br\\s*\\/?\\s*>/gi, "\\n");
+      text = text.replace(/<\\/(p|div|h[1-6]|li|tr|blockquote|section|article|ul|ol|header|footer|dd|dt)\\s*>/gi, "\\n");
       text = text.replace(/<(p|div|h[1-6]|li|tr|blockquote|section|article|ul|ol|header|footer|dd|dt)\\b[^>]*>/gi, "\\n");
       text = text.replace(/<\\/(a|span)>/gi, " ");
       text = text.replace(/<(a|span)\\b[^>]*>/gi, " ");
@@ -1851,7 +1852,7 @@ async function renderExplorer(request: Request, env: Env): Promise<string> {
     }
 
     function looksLikeHtml(value) {
-      return /<\\/?[a-z][^>]*>/i.test(value);
+      return /<\\/?\\s*[a-z][^>]*>/i.test(value);
     }
 
     function decodeHtmlEntities(value) {
@@ -2755,9 +2756,10 @@ function plainTextFromHtml(value: string): string {
   if (!looksLikeHtml(text)) return normalizePlainText(text);
 
   text = text.replace(/<!--[\s\S]*?-->/g, "");
+  text = text.replace(/<\s*(\/?)\s*/g, "<$1");
   text = text.replace(/<(script|style)\b[^>]*>[\s\S]*?<\/\1>/gi, "");
-  text = text.replace(/<br\s*\/?>/gi, "\n");
-  text = text.replace(/<\/(p|div|h[1-6]|li|tr|blockquote|section|article|ul|ol|header|footer|dd|dt)>/gi, "\n");
+  text = text.replace(/<br\s*\/?\s*>/gi, "\n");
+  text = text.replace(/<\/(p|div|h[1-6]|li|tr|blockquote|section|article|ul|ol|header|footer|dd|dt)\s*>/gi, "\n");
   text = text.replace(/<(p|div|h[1-6]|li|tr|blockquote|section|article|ul|ol|header|footer|dd|dt)\b[^>]*>/gi, "\n");
   text = text.replace(/<\/(a|span)>/gi, " ");
   text = text.replace(/<(a|span)\b[^>]*>/gi, " ");
@@ -2768,7 +2770,7 @@ function plainTextFromHtml(value: string): string {
 }
 
 function looksLikeHtml(value: string): boolean {
-  return /<\/?[a-z][^>]*>/i.test(value);
+  return /<\/?\s*[a-z][^>]*>/i.test(value);
 }
 
 function decodeHtmlEntities(value: string): string {
