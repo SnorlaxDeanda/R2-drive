@@ -1743,14 +1743,48 @@ async function renderExplorer(request: Request, env: Env): Promise<string> {
         if (!part || part === "." || part === "..") continue;
         kept.push(part);
       }
-      return kept.join("/");
+      return kept
+        .map((part, index) => cleanUploadName(part, index === kept.length - 1))
+        .join("/");
+    }
+
+    function cleanUploadName(value, isFile) {
+      const trimmed = String(value || "").trim();
+      let extension = "";
+      let stem = trimmed;
+      if (isFile) {
+        const match = trimmed.match(/(\\.[a-z0-9]{1,8})$/i);
+        if (match && match[1].length < trimmed.length) {
+          extension = match[1].toLowerCase();
+          stem = trimmed.slice(0, -match[1].length);
+          while (stem.toLowerCase().endsWith(extension)) stem = stem.slice(0, -extension.length);
+        }
+      }
+
+      stem = stem
+        .replace(/[_]+/g, " ")
+        .replace(/[\\u0000-\\u001f\\u007f<>:"|?*]/g, "")
+        .replace(/\\s+/g, " ")
+        .trim();
+
+      const junk = /\\s*[\\[({]\\s*(?:epub|pdf|mobi|azw3?|kf8|retail|scan(?:ned)?|converted|z-?lib(?:rary)?|libgen|library\\s+genesis|anna['’]?s\\s+archive|1lib|pdfdrive)\\s*[\\])}]\\s*/gi;
+      const trailing = /\\s*[-–—]\\s*(?:epub|pdf|mobi|azw3?|kf8|retail|scan(?:ned)?|converted|z-?lib(?:rary)?|libgen|library\\s+genesis|anna['’]?s\\s+archive|1lib|pdfdrive)\\s*$/i;
+      let previous = "";
+      while (stem !== previous) {
+        previous = stem;
+        stem = stem.replace(junk, " ").replace(trailing, "").replace(/\\s+/g, " ").trim();
+      }
+
+      stem = stem.replace(/^[\\s.\\-–—]+|[\\s.\\-–—]+$/g, "").replace(/\\s+/g, " ").trim();
+      if (!stem) stem = isFile ? "file" : "folder";
+      return stem + extension;
     }
 
     function shouldSkipUpload(file) {
-      const relativePath = uploadRelativePath(file).toLowerCase();
-      const base = relativePath.split("/").pop() || "";
-      return !relativePath
-        || relativePath.includes("__macosx/")
+      const raw = String(file.relativePath || file.webkitRelativePath || file.name || "").replace(/\\\\/g, "/").toLowerCase();
+      const base = raw.split("/").filter(Boolean).pop() || "";
+      return !uploadRelativePath(file)
+        || raw.includes("__macosx/")
         || base === ".ds_store"
         || base === "thumbs.db"
         || base === "desktop.ini";
@@ -2812,6 +2846,43 @@ function normalizeKey(value: string | null): string {
   return key;
 }
 
+const UPLOAD_JUNK_TAG = "(?:epub|pdf|mobi|azw3?|kf8|retail|scan(?:ned)?|converted|z-?lib(?:rary)?|libgen|library\\s+genesis|anna['’]?s\\s+archive|1lib|pdfdrive)";
+
+function cleanUploadName(value: string, isFile: boolean): string {
+  const trimmed = value.trim();
+  let extension = "";
+  let stem = trimmed;
+
+  if (isFile) {
+    const match = trimmed.match(/(\.[a-z0-9]{1,8})$/i);
+    if (match && match[1].length < trimmed.length) {
+      extension = match[1].toLowerCase();
+      stem = trimmed.slice(0, -match[1].length);
+      while (stem.toLowerCase().endsWith(extension)) {
+        stem = stem.slice(0, -extension.length);
+      }
+    }
+  }
+
+  stem = stem
+    .replace(/[_]+/g, " ")
+    .replace(/[\u0000-\u001f\u007f<>:"|?*]/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
+
+  const junk = new RegExp(`\\s*[\\[({]\\s*${UPLOAD_JUNK_TAG}\\s*[\\])}]\\s*`, "gi");
+  const trailing = new RegExp(`\\s*[-–—]\\s*${UPLOAD_JUNK_TAG}\\s*$`, "i");
+  let previous = "";
+  while (stem !== previous) {
+    previous = stem;
+    stem = stem.replace(junk, " ").replace(trailing, "").replace(/\s+/g, " ").trim();
+  }
+
+  stem = stem.replace(/^[\s.\-–—]+|[\s.\-–—]+$/g, "").replace(/\s+/g, " ").trim();
+  if (!stem) stem = isFile ? "file" : "folder";
+  return `${stem}${extension}`;
+}
+
 function sanitizeRelativePath(value: string): string {
   const parts = value.replace(/\\/g, "/").split("/");
   const kept: string[] = [];
@@ -2828,7 +2899,9 @@ function sanitizeRelativePath(value: string): string {
     throw new Error("A valid file name is required");
   }
 
-  return kept.join("/");
+  return kept
+    .map((part, index) => cleanUploadName(part, index === kept.length - 1))
+    .join("/");
 }
 
 function normalizeObjectName(value: string): string {
@@ -2839,12 +2912,20 @@ function normalizeObjectName(value: string): string {
   return normalized;
 }
 
+function cleanedUploadKey(uploadedKeysByName: Map<string, string>, fileName: string): string | undefined {
+  try {
+    return uploadedKeysByName.get(sanitizeRelativePath(fileName));
+  } catch {
+    return undefined;
+  }
+}
+
 function normalizeFolderName(value: string): string {
   const normalized = value.trim().replace(/^\/+|\/+$/g, "");
-  if (!normalized || normalized.includes("/") || normalized.includes("\\") || normalized.includes("\0")) {
+  if (!normalized || normalized.includes("/") || normalized.includes("\\") || normalized.includes("\0") || normalized === "." || normalized === "..") {
     throw new Error("Use a single valid folder name without slashes");
   }
-  return normalized;
+  return cleanUploadName(normalized, false);
 }
 
 async function getBookMetadata(env: Env): Promise<Map<string, BookInfo>> {
@@ -2979,7 +3060,7 @@ async function storeUploadedBookMetadata(
   const updates: Record<string, BookInfo> = {};
 
   for (const entry of entries) {
-    const bookKey = uploadedKeysByName.get(entry.fileName);
+    const bookKey = uploadedKeysByName.get(entry.fileName) ?? cleanedUploadKey(uploadedKeysByName, entry.fileName);
     if (!bookKey) continue;
 
     const info: BookInfo = {};
