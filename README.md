@@ -212,6 +212,9 @@ If a cover image is found, the Worker uploads it to:
 covers/<cleaned-epub-filename>.<extension>
 ```
 
+The `covers/` folder is hidden from the file list and from search. Cover images are
+still shown on each book.
+
 The Worker then merges the extracted book data into `_book-metadata.json` in the
 root of the R2 bucket. The explorer hides this file from normal file browsing and
 uses it to decorate matching book files.

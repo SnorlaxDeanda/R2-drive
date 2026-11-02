@@ -85,6 +85,7 @@ const LOGO_URL = "https://www.pngmart.com/files/22/Snorlax-Pokemon-PNG.gif";
 const BOOK_METADATA_KEY = "_book-metadata.json";
 const ANALYTICS_PREFIX = "_analytics/";
 const AUTH_OVERRIDES_PREFIX = "_auth/users/";
+const COVERS_PREFIX = "covers/";
 const DOWNLOAD_EVENTS_PREFIX = `${ANALYTICS_PREFIX}downloads/`;
 
 export default {
@@ -185,7 +186,7 @@ async function listObjects(request: Request, env: Env): Promise<Response> {
   });
 
   const folders: FolderEntry[] = (listed.delimitedPrefixes ?? [])
-    .filter((folderPrefix) => !isInternalKey(folderPrefix))
+    .filter((folderPrefix) => !isHiddenFromExplorer(folderPrefix))
     .sort((left, right) => left.localeCompare(right))
     .map((folderPrefix) => ({
       name: folderName(prefix, folderPrefix),
@@ -3367,14 +3368,14 @@ function sortStats<T extends StatsBucket>(stats: T[]): T[] {
 }
 
 function isSearchableKey(key: string): boolean {
-  if (!key || isInternalKey(key)) return false;
+  if (!key || isHiddenFromExplorer(key)) return false;
   return basename(key) !== ".keep";
 }
 
 function shouldShowObject(key: string, prefix: string): boolean {
   if (key === prefix || !key.startsWith(prefix)) return false;
   const name = key.slice(prefix.length);
-  return name !== ".keep" && !isInternalKey(key) && name.length > 0 && !name.includes("/");
+  return name !== ".keep" && !isHiddenFromExplorer(key) && name.length > 0 && !name.includes("/");
 }
 
 function shouldTrackAccess(key: string): boolean {
@@ -3383,6 +3384,10 @@ function shouldTrackAccess(key: string): boolean {
 
 function isInternalKey(key: string): boolean {
   return key === BOOK_METADATA_KEY || key.startsWith(ANALYTICS_PREFIX) || key.startsWith(AUTH_OVERRIDES_PREFIX);
+}
+
+function isHiddenFromExplorer(key: string): boolean {
+  return isInternalKey(key) || key === "covers" || key.startsWith(COVERS_PREFIX);
 }
 
 function folderName(prefix: string, folderPrefix: string): string {
