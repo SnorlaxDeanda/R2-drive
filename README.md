@@ -8,7 +8,7 @@ download objects, and delete objects from a web UI.
 
 - Folder-style navigation using R2 prefixes
 - File table with name, last modified time, size, and content type
-- Drag-and-drop or file-picker uploads
+- Drag-and-drop or file-picker uploads, including a whole folder and its subfolders
 - New folder creation using hidden `.keep` marker objects
 - Open and download links for objects
 - Optional delete support
@@ -200,7 +200,10 @@ ALLOW_DELETES = "false"
 When a user uploads an `.epub` file from the browser, the explorer tries to read
 the EPUB metadata before uploading it. It extracts the package OPF path from
 `META-INF/container.xml`, then reads title, author, description, and cover image
-metadata from the OPF file.
+metadata from the OPF file. HTML in a description is stored and shown as plain
+text, with paragraph breaks kept. Series titles that were stuck together, such
+as `RosesA Court of Mist and Fury`, are split onto their own lines. Descriptions
+already saved with those tags are cleaned when the explorer reads them.
 
 If a cover image is found, the Worker uploads it to:
 
@@ -327,6 +330,6 @@ The UI uses these same-origin routes:
 - `GET /api/stats` returns aggregated stats for admin/delete-capable users.
 - `GET /api/object?key=<key>` opens an object.
 - `GET /api/object?key=<key>&download=1` downloads an object.
-- `POST /api/upload` uploads multipart form files using `prefix` and `files`.
+- `POST /api/upload` uploads multipart form files using `prefix` and `files`. Optional `paths` values keep folder structure, one path for each file.
 - `POST /api/folder` creates a folder marker from JSON `{ "prefix", "name" }`.
 - `DELETE /api/object?key=<key>` deletes an object.
