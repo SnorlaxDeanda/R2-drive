@@ -9,6 +9,7 @@ download objects, and delete objects from a web UI.
 - Folder-style navigation using R2 prefixes
 - File table with name, last modified time, size, and content type
 - Drag-and-drop or file-picker uploads, including a whole folder and its subfolders
+- Uploaded file and folder names are tidied: underscores become spaces, extra spacing is collapsed, and download tags such as `[EPUB]` or `(z-library)` are removed
 - New folder creation using hidden `.keep` marker objects
 - Open and download links for objects
 - Optional delete support
