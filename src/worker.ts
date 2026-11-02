@@ -816,6 +816,7 @@ async function renderExplorer(request: Request, env: Env): Promise<string> {
       margin-top: 6px;
       max-width: 42rem;
       overflow-wrap: anywhere;
+      white-space: pre-line;
     }
     .icon {
       align-items: center;
@@ -1665,7 +1666,7 @@ async function renderExplorer(request: Request, env: Env): Promise<string> {
       const opfXml = parseXml(opfText);
       const metadata = {
         author: firstTextByLocalName(opfXml, "creator"),
-        description: firstTextByLocalName(opfXml, "description"),
+        description: descriptionFromElement(firstElementByLocalName(opfXml, "description")),
         title: firstTextByLocalName(opfXml, "title")
       };
 
@@ -1813,6 +1814,91 @@ async function renderExplorer(request: Request, env: Env): Promise<string> {
     function firstTextByLocalName(xml, localName) {
       const element = firstElementByLocalName(xml, localName);
       return element?.textContent?.trim() || "";
+    }
+
+    function descriptionFromElement(element) {
+      if (!element) return "";
+      const text = element.textContent || "";
+      if (looksLikeHtml(text)) return plainTextFromHtml(text);
+      if (element.children && element.children.length > 0) {
+        const markup = typeof element.innerHTML === "string"
+          ? element.innerHTML
+          : Array.from(element.childNodes).map((node) => new XMLSerializer().serializeToString(node)).join("");
+        return plainTextFromHtml(markup);
+      }
+      return text.trim();
+    }
+
+    function plainTextFromHtml(value) {
+      let text = decodeHtmlEntities(String(value || "")).replace(/\\r\\n?/g, "\\n").trim();
+      if (!text) return "";
+      if (!looksLikeHtml(text) && /&(?:#\\d+|#x[0-9a-f]+|[a-z]+);/i.test(text)) {
+        text = decodeHtmlEntities(text);
+      }
+      if (!looksLikeHtml(text)) return normalizePlainText(text);
+
+      text = text.replace(/<!--[\\s\\S]*?-->/g, "");
+      text = text.replace(/<(script|style)\\b[^>]*>[\\s\\S]*?<\\/\\1>/gi, "");
+      text = text.replace(/<br\\s*\\/?>/gi, "\\n");
+      text = text.replace(/<\\/(p|div|h[1-6]|li|tr|blockquote|section|article|ul|ol|header|footer|dd|dt)>/gi, "\\n");
+      text = text.replace(/<(p|div|h[1-6]|li|tr|blockquote|section|article|ul|ol|header|footer|dd|dt)\\b[^>]*>/gi, "\\n");
+      text = text.replace(/<\\/(a|span)>/gi, " ");
+      text = text.replace(/<(a|span)\\b[^>]*>/gi, " ");
+      text = text.replace(/<[^>]+>/g, "");
+      text = decodeHtmlEntities(text);
+      text = separateGluedPhrases(text);
+      return normalizePlainText(text);
+    }
+
+    function looksLikeHtml(value) {
+      return /<\\/?[a-z][^>]*>/i.test(value);
+    }
+
+    function decodeHtmlEntities(value) {
+      const named = {
+        amp: "&",
+        apos: "'",
+        bull: "\\u2022",
+        gt: ">",
+        hellip: "\\u2026",
+        ldquo: "\\u201c",
+        lsquo: "\\u2018",
+        lt: "<",
+        mdash: "\\u2014",
+        nbsp: " ",
+        ndash: "\\u2013",
+        quot: "\\"",
+        rdquo: "\\u201d",
+        rsquo: "\\u2019"
+      };
+      return value.replace(/&(#x[0-9a-f]+|#\\d+|[a-z]+);/gi, (entity, body) => {
+        const lower = String(body).toLowerCase();
+        if (lower.startsWith("#x")) {
+          const code = parseInt(lower.slice(2), 16);
+          return code > 0 && code < 0x110000 ? String.fromCodePoint(code) : entity;
+        }
+        if (lower.startsWith("#")) {
+          const code = parseInt(lower.slice(1), 10);
+          return code > 0 && code < 0x110000 ? String.fromCodePoint(code) : entity;
+        }
+        return Object.prototype.hasOwnProperty.call(named, lower) ? named[lower] : entity;
+      });
+    }
+
+    function separateGluedPhrases(value) {
+      return value
+        .replace(/:([A-Z])/g, ": $1")
+        .replace(/([a-z])([A-Z][a-z]*\\s+[A-Z])/g, "$1\\n$2");
+    }
+
+    function normalizePlainText(value) {
+      return value
+        .replace(/\\u00a0/g, " ")
+        .split("\\n")
+        .map((line) => line.replace(/[ \\t]+/g, " ").trim())
+        .join("\\n")
+        .replace(/\\n{3,}/g, "\\n\\n")
+        .trim();
     }
 
     function dirname(path) {
@@ -2643,6 +2729,79 @@ async function getBookMetadata(env: Env): Promise<Map<string, BookInfo>> {
   }
 }
 
+const HTML_ENTITIES: Record<string, string> = {
+  amp: "&",
+  apos: "'",
+  bull: "•",
+  gt: ">",
+  hellip: "…",
+  ldquo: "“",
+  lsquo: "‘",
+  lt: "<",
+  mdash: "—",
+  nbsp: " ",
+  ndash: "–",
+  quot: "\"",
+  rdquo: "”",
+  rsquo: "’",
+};
+
+function plainTextFromHtml(value: string): string {
+  let text = decodeHtmlEntities(value).replace(/\r\n?/g, "\n").trim();
+  if (!text) return "";
+  if (!looksLikeHtml(text) && /&(?:#\d+|#x[0-9a-f]+|[a-z]+);/i.test(text)) {
+    text = decodeHtmlEntities(text);
+  }
+  if (!looksLikeHtml(text)) return normalizePlainText(text);
+
+  text = text.replace(/<!--[\s\S]*?-->/g, "");
+  text = text.replace(/<(script|style)\b[^>]*>[\s\S]*?<\/\1>/gi, "");
+  text = text.replace(/<br\s*\/?>/gi, "\n");
+  text = text.replace(/<\/(p|div|h[1-6]|li|tr|blockquote|section|article|ul|ol|header|footer|dd|dt)>/gi, "\n");
+  text = text.replace(/<(p|div|h[1-6]|li|tr|blockquote|section|article|ul|ol|header|footer|dd|dt)\b[^>]*>/gi, "\n");
+  text = text.replace(/<\/(a|span)>/gi, " ");
+  text = text.replace(/<(a|span)\b[^>]*>/gi, " ");
+  text = text.replace(/<[^>]+>/g, "");
+  text = decodeHtmlEntities(text);
+  text = separateGluedPhrases(text);
+  return normalizePlainText(text);
+}
+
+function looksLikeHtml(value: string): boolean {
+  return /<\/?[a-z][^>]*>/i.test(value);
+}
+
+function decodeHtmlEntities(value: string): string {
+  return value.replace(/&(#x[0-9a-f]+|#\d+|[a-z]+);/gi, (entity, body: string) => {
+    const lower = body.toLowerCase();
+    if (lower.startsWith("#x")) {
+      const code = Number.parseInt(lower.slice(2), 16);
+      return code > 0 && code < 0x110000 ? String.fromCodePoint(code) : entity;
+    }
+    if (lower.startsWith("#")) {
+      const code = Number.parseInt(lower.slice(1), 10);
+      return code > 0 && code < 0x110000 ? String.fromCodePoint(code) : entity;
+    }
+    return HTML_ENTITIES[lower] ?? entity;
+  });
+}
+
+function separateGluedPhrases(value: string): string {
+  return value
+    .replace(/:([A-Z])/g, ": $1")
+    .replace(/([a-z])([A-Z][a-z]*\s+[A-Z])/g, "$1\n$2");
+}
+
+function normalizePlainText(value: string): string {
+  return value
+    .replace(/\u00a0/g, " ")
+    .split("\n")
+    .map((line) => line.replace(/[ \t]+/g, " ").trim())
+    .join("\n")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+}
+
 function parseUploadedBookMetadata(value: unknown): UploadedBookMetadata[] {
   if (typeof value !== "string" || !value.trim()) return [];
 
@@ -2671,7 +2830,10 @@ function parseUploadedBookMetadataEntry(value: unknown): UploadedBookMetadata | 
   if (typeof raw.author === "string" && raw.author.trim()) entry.author = raw.author.trim();
   if (typeof raw.coverContentType === "string" && raw.coverContentType.trim()) entry.coverContentType = raw.coverContentType.trim();
   if (typeof raw.coverFileName === "string" && raw.coverFileName.trim()) entry.coverFileName = raw.coverFileName.trim();
-  if (typeof raw.description === "string" && raw.description.trim()) entry.description = raw.description.trim();
+  if (typeof raw.description === "string") {
+    const description = plainTextFromHtml(raw.description);
+    if (description) entry.description = description;
+  }
   if (typeof raw.title === "string" && raw.title.trim()) entry.title = raw.title.trim();
 
   return entry;
@@ -2810,7 +2972,10 @@ function parseBookInfo(value: unknown): BookInfo | null {
   if (typeof raw.author === "string") info.author = raw.author;
   if (typeof raw.coverKey === "string") info.coverKey = raw.coverKey;
   if (typeof raw.coverUrl === "string") info.coverUrl = raw.coverUrl;
-  if (typeof raw.description === "string") info.description = raw.description;
+  if (typeof raw.description === "string") {
+    const description = plainTextFromHtml(raw.description);
+    if (description) info.description = description;
+  }
   if (typeof raw.title === "string") info.title = raw.title;
 
   return Object.keys(info).length > 0 ? info : null;
