@@ -201,7 +201,9 @@ ALLOW_DELETES = "false"
 When a user uploads an `.epub` file from the browser, the explorer tries to read
 the EPUB metadata before uploading it. It extracts the package OPF path from
 `META-INF/container.xml`, then reads title, author, description, and cover image
-metadata from the OPF file. HTML in a description is stored and shown as plain
+metadata from the OPF file. If a book uses an older or slightly broken EPUB layout,
+the explorer also checks the package file, a cover page, and a `cover.jpg` image.
+HTML in a description is stored and shown as plain
 text, with paragraph breaks kept. Series titles that were stuck together, such
 as `RosesA Court of Mist and Fury`, are split onto their own lines. Descriptions
 already saved with those tags are cleaned when the explorer reads them.
