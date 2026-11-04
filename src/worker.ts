@@ -1653,29 +1653,31 @@ async function renderExplorer(request: Request, env: Env): Promise<string> {
       form.append("files", file, file.name);
 
       if (isEpubFile(file)) {
+        let metadata = null;
         try {
-          const metadata = await extractEpubMetadata(file);
-          if (metadata) {
-            if (metadata.coverBlob) {
-              const extension = metadata.coverExtension || extensionFromContentType(metadata.coverContentType) || "jpg";
-              const coverFileName = cleanFilename(relativePath.replace(/\\.epub$/i, "")) + "." + extension;
-              form.append("coverFiles", metadata.coverBlob, coverFileName);
-              metadata.coverFileName = coverFileName;
-            }
-
-            delete metadata.coverBlob;
-            form.append("bookMetadata", JSON.stringify([{
-              author: metadata.author,
-              coverContentType: metadata.coverContentType,
-              coverFileName: metadata.coverFileName,
-              description: metadata.description,
-              fileName: relativePath,
-              title: metadata.title
-            }]));
-          }
+          metadata = await extractEpubMetadata(file);
         } catch (error) {
           console.warn("Could not extract EPUB metadata for", relativePath, error);
         }
+        if (!metadata) metadata = {};
+        if (!metadata.title) metadata.title = epubTitleFromPath(relativePath);
+
+        if (metadata.coverBlob) {
+          const extension = metadata.coverExtension || extensionFromContentType(metadata.coverContentType) || "jpg";
+          const coverFileName = cleanFilename(relativePath.replace(/\\.epub$/i, "")) + "." + extension;
+          form.append("coverFiles", metadata.coverBlob, coverFileName);
+          metadata.coverFileName = coverFileName;
+        }
+
+        delete metadata.coverBlob;
+        form.append("bookMetadata", JSON.stringify([{
+          author: metadata.author,
+          coverContentType: metadata.coverContentType,
+          coverFileName: metadata.coverFileName,
+          description: metadata.description,
+          fileName: relativePath,
+          title: metadata.title
+        }]));
       }
 
       await api("/api/upload", {
@@ -1795,88 +1797,187 @@ async function renderExplorer(request: Request, env: Env): Promise<string> {
       return file.name.toLowerCase().endsWith(".epub");
     }
 
+    function epubTitleFromPath(relativePath) {
+      return String(relativePath || "").split("/").pop().replace(/\\.epub$/i, "") || "Untitled";
+    }
+
     async function extractEpubMetadata(file) {
       const zip = await readZip(file);
-      const containerText = await zip.text("META-INF/container.xml");
-      if (!containerText) return null;
+      const located = await locateOpf(zip);
+      const metadata = located ? readOpfMetadata(located.opfXml, located.opfText) : {};
 
-      const containerXml = parseXml(containerText);
-      const rootfile = firstElementByLocalName(containerXml, "rootfile");
-      const opfPath = rootfile?.getAttribute("full-path");
-      if (!opfPath) return null;
-
-      const opfText = await zip.text(opfPath);
-      if (!opfText) return null;
-
-      const opfXml = parseXml(opfText);
-      const metadata = {
-        author: firstTextByLocalName(opfXml, "creator"),
-        description: descriptionFromElement(firstElementByLocalName(opfXml, "description")),
-        title: firstTextByLocalName(opfXml, "title")
-      };
-
-      const cover = await extractEpubCover(zip, opfXml, opfPath);
-      if (cover) {
-        metadata.coverBlob = cover.blob;
-        metadata.coverContentType = cover.contentType;
-        metadata.coverExtension = cover.extension;
+      if (located) {
+        try {
+          const cover = await extractEpubCover(zip, located.opfXml, located.opfPath);
+          if (cover) {
+            metadata.coverBlob = cover.blob;
+            metadata.coverContentType = cover.contentType;
+            metadata.coverExtension = cover.extension;
+          }
+        } catch (error) {
+          console.warn("Could not read EPUB cover for", file.name, error);
+        }
       }
 
       return metadata;
     }
 
-    async function extractEpubCover(zip, opfXml, opfPath) {
-      const item = findCoverManifestItem(opfXml);
-      const href = item?.getAttribute("href");
-      if (!href) return null;
+    async function locateOpf(zip) {
+      const containerText = await zip.text("META-INF/container.xml");
+      if (containerText) {
+        const rootfiles = elementsByLocalName(parseXml(containerText), "rootfile");
+        for (const rootfile of rootfiles) {
+          const opfPath = attr(rootfile, "full-path");
+          if (!opfPath) continue;
+          const opfText = await zip.text(opfPath);
+          if (opfText) return { opfPath, opfText, opfXml: parseXml(opfText) };
+        }
+      }
 
-      const coverPath = joinZipPath(dirname(opfPath), href);
-      const bytes = await zip.bytes(coverPath);
-      if (!bytes) return null;
+      const fallback = zip.paths().find((path) =>
+        path.toLowerCase().endsWith(".opf") && !path.toLowerCase().includes("__macosx/")
+      );
+      if (!fallback) return null;
+      const opfText = await zip.text(fallback);
+      if (!opfText) return null;
+      return { opfPath: fallback, opfText, opfXml: parseXml(opfText) };
+    }
 
-      const contentType = item.getAttribute("media-type") || contentTypeFromPath(href);
+    function readOpfMetadata(opfXml, opfText) {
+      const creators = elementsByLocalName(opfXml, "creator");
+      const authorElement = creators.find((element) => {
+        const role = attr(element, "role").toLowerCase();
+        return role === "aut" || role === "a01";
+      }) || creators[0];
       return {
-        blob: new Blob([bytes], { type: contentType }),
-        contentType,
-        extension: extensionFromPath(href) || extensionFromContentType(contentType)
+        author: firstFilled(
+          authorElement?.textContent?.trim() || "",
+          metaContent(opfXml, ["creator", "author"]),
+          matchXmlText(opfText, "creator")
+        ),
+        description: firstFilled(
+          longestDescription(opfXml),
+          plainTextFromHtml(metaContent(opfXml, ["description", "comment"])),
+          plainTextFromHtml(matchXmlText(opfText, "description"))
+        ),
+        title: firstFilled(
+          firstTextByLocalName(opfXml, "title"),
+          metaContent(opfXml, ["title"]),
+          matchXmlText(opfText, "title")
+        )
       };
     }
 
-    function findCoverManifestItem(opfXml) {
-      const items = Array.from(opfXml.getElementsByTagName("*"))
-        .filter((node) => node.localName === "item");
-
-      const propertyCover = items.find((item) =>
-        (item.getAttribute("properties") || "").split(/\\s+/).includes("cover-image")
-      );
-      if (propertyCover) return propertyCover;
-
-      const metas = Array.from(opfXml.getElementsByTagName("*"))
-        .filter((node) => node.localName === "meta");
-      const coverMeta = metas.find((meta) => meta.getAttribute("name") === "cover");
-      const coverId = coverMeta?.getAttribute("content");
-      if (coverId) {
-        const itemById = items.find((item) => item.getAttribute("id") === coverId);
-        if (itemById) return itemById;
+    async function extractEpubCover(zip, opfXml, opfPath) {
+      const candidates = findCoverCandidates(opfXml);
+      for (const candidate of candidates) {
+        const resolved = await resolveCoverTarget(zip, opfPath, candidate.href, candidate.mediaType);
+        if (resolved) return resolved;
       }
 
-      return items.find((item) => (item.getAttribute("media-type") || "").startsWith("image/")) || null;
+      const loose = zip.paths().find((path) => /(^|\\/)cover\\.(jpe?g|png|gif|webp)$/i.test(path));
+      if (!loose) return null;
+      return coverBlobFromBytes(await zipBytesSafe(zip, loose), contentTypeFromPath(loose), loose);
+    }
+
+    async function resolveCoverTarget(zip, opfPath, href, mediaType) {
+      if (!href) return null;
+      const path = joinZipPath(dirname(opfPath), href);
+      const type = mediaType || contentTypeFromPath(path);
+      if (type.startsWith("image/") || /\\.(jpe?g|png|gif|webp)$/i.test(path)) {
+        return coverBlobFromBytes(await zipBytesSafe(zip, path), type.startsWith("image/") ? type : contentTypeFromPath(path), path);
+      }
+
+      if (!type.includes("html") && !/\\.x?html?$/i.test(path)) return null;
+      const markup = await zip.text(path);
+      const match = String(markup || "").match(/<img\\b[^>]*\\bsrc\\s*=\\s*["']([^"']+)["']/i);
+      if (!match) return null;
+      const imagePath = joinZipPath(dirname(path), match[1]);
+      return coverBlobFromBytes(await zipBytesSafe(zip, imagePath), contentTypeFromPath(imagePath), imagePath);
+    }
+
+    function coverBlobFromBytes(bytes, contentType, path) {
+      if (!bytes || !bytes.length) return null;
+      const type = contentType && contentType.startsWith("image/") ? contentType : contentTypeFromPath(path);
+      return {
+        blob: new Blob([bytes], { type }),
+        contentType: type,
+        extension: extensionFromPath(path) || extensionFromContentType(type)
+      };
+    }
+
+    async function zipBytesSafe(zip, path) {
+      try {
+        return await zip.bytes(path);
+      } catch (error) {
+        console.warn("Could not read EPUB entry", path, error);
+        return null;
+      }
+    }
+
+    function findCoverCandidates(opfXml) {
+      const items = elementsByLocalName(opfXml, "item");
+      const metas = elementsByLocalName(opfXml, "meta");
+      const references = elementsByLocalName(opfXml, "reference");
+      const ordered = [];
+      const pushItem = (item) => {
+        const href = attr(item, "href");
+        if (!item || !href || ordered.some((candidate) => candidate.href === href)) return;
+        ordered.push({ href, mediaType: attr(item, "media-type") });
+      };
+
+      pushItem(items.find((item) => attr(item, "properties").split(/\\s+/).includes("cover-image")));
+      const coverMeta = metas.find((meta) => attr(meta, "name").toLowerCase() === "cover");
+      const coverId = coverMeta ? attr(coverMeta, "content") : "";
+      if (coverId) pushItem(items.find((item) => attr(item, "id") === coverId));
+      pushItem(items.find((item) => /cover/i.test(attr(item, "id")) && isUsefulCoverImage(item)));
+      pushItem(items.find((item) => /cover\\.(jpe?g|png|gif|webp)$/i.test(attr(item, "href"))));
+      const guide = references.find((reference) => attr(reference, "type").toLowerCase() === "cover");
+      if (guide && attr(guide, "href")) {
+        ordered.push({ href: attr(guide, "href"), mediaType: contentTypeFromPath(attr(guide, "href")) });
+      }
+      pushItem(items.find((item) => isUsefulCoverImage(item)));
+      return ordered;
+    }
+
+    function isUsefulCoverImage(item) {
+      const href = attr(item, "href").toLowerCase();
+      if (!href || /logo|icon|apple-touch|thumbnail/.test(href)) return false;
+      const mediaType = attr(item, "media-type");
+      return mediaType.startsWith("image/") || /\\.(jpe?g|png|gif|webp)$/i.test(href);
     }
 
     async function readZip(file) {
       const buffer = await file.arrayBuffer();
       const view = new DataView(buffer);
       const entries = readZipEntries(buffer, view);
+      const byLower = new Map();
+      for (const name of entries.keys()) {
+        const key = name.toLowerCase();
+        if (!byLower.has(key)) byLower.set(key, name);
+      }
+
+      function resolvePath(path) {
+        const normalized = normalizeZipPath(path);
+        if (entries.has(normalized)) return normalized;
+        return byLower.get(normalized.toLowerCase()) || "";
+      }
 
       return {
+        paths() {
+          return Array.from(entries.keys());
+        },
         async bytes(path) {
-          const entry = entries.get(normalizeZipPath(path));
-          if (!entry) return null;
-          return inflateZipEntry(buffer, entry);
+          const name = resolvePath(path);
+          if (!name) return null;
+          return inflateZipEntry(buffer, entries.get(name));
         },
         async text(path) {
           const bytes = await this.bytes(path);
-          return bytes ? new TextDecoder("utf-8").decode(bytes) : "";
+          if (!bytes) return "";
+          const utf8 = new TextDecoder("utf-8", { fatal: false }).decode(bytes);
+          if (!utf8.includes("\\uFFFD")) return utf8;
+          return new TextDecoder("windows-1252").decode(bytes);
         }
       };
     }
@@ -1891,20 +1992,26 @@ async function renderExplorer(request: Request, env: Env): Promise<string> {
       let offset = centralDirectoryOffset;
 
       for (let index = 0; index < entryCount; index += 1) {
-        if (view.getUint32(offset, true) !== 0x02014b50) break;
+        if (offset + 46 > view.byteLength || view.getUint32(offset, true) !== 0x02014b50) break;
 
         const flags = view.getUint16(offset + 8, true);
         const method = view.getUint16(offset + 10, true);
-        const compressedSize = view.getUint32(offset + 20, true);
-        const uncompressedSize = view.getUint32(offset + 24, true);
+        let compressedSize = view.getUint32(offset + 20, true);
+        let uncompressedSize = view.getUint32(offset + 24, true);
         const nameLength = view.getUint16(offset + 28, true);
         const extraLength = view.getUint16(offset + 30, true);
         const commentLength = view.getUint16(offset + 32, true);
-        const localHeaderOffset = view.getUint32(offset + 42, true);
+        let localHeaderOffset = view.getUint32(offset + 42, true);
         const nameBytes = new Uint8Array(buffer, offset + 46, nameLength);
-        const name = decodeZipName(nameBytes, flags);
+        const name = normalizeZipPath(decodeZipName(nameBytes, flags));
+        if (compressedSize === 0xffffffff || uncompressedSize === 0xffffffff || localHeaderOffset === 0xffffffff) {
+          const zip64 = applyZip64Extra(buffer, offset + 46 + nameLength, extraLength, compressedSize, uncompressedSize, localHeaderOffset);
+          compressedSize = zip64.compressedSize;
+          uncompressedSize = zip64.uncompressedSize;
+          localHeaderOffset = zip64.localHeaderOffset;
+        }
 
-        entries.set(normalizeZipPath(name), {
+        entries.set(name, {
           compressedSize,
           localHeaderOffset,
           method,
@@ -1915,6 +2022,43 @@ async function renderExplorer(request: Request, env: Env): Promise<string> {
       }
 
       return entries;
+    }
+
+    function applyZip64Extra(buffer, extraOffset, extraLength, compressedSize, uncompressedSize, localHeaderOffset) {
+      const view = new DataView(buffer);
+      const end = Math.min(buffer.byteLength, extraOffset + extraLength);
+      let cursor = extraOffset;
+      let compressed = compressedSize;
+      let uncompressed = uncompressedSize;
+      let localOffset = localHeaderOffset;
+
+      while (cursor + 4 <= end) {
+        const id = view.getUint16(cursor, true);
+        const size = view.getUint16(cursor + 2, true);
+        let pos = cursor + 4;
+        if (id === 1) {
+          if (uncompressed === 0xffffffff && pos + 8 <= end) {
+            uncompressed = numberFromUint64(view, pos);
+            pos += 8;
+          }
+          if (compressed === 0xffffffff && pos + 8 <= end) {
+            compressed = numberFromUint64(view, pos);
+            pos += 8;
+          }
+          if (localOffset === 0xffffffff && pos + 8 <= end) {
+            localOffset = numberFromUint64(view, pos);
+          }
+        }
+        cursor += 4 + size;
+      }
+
+      return { compressedSize: compressed, localHeaderOffset: localOffset, uncompressedSize: uncompressed };
+    }
+
+    function numberFromUint64(view, offset) {
+      const value = view.getBigUint64(offset, true);
+      if (value > BigInt(Number.MAX_SAFE_INTEGER)) throw new Error("EPUB entry is too large");
+      return Number(value);
     }
 
     function findEndOfCentralDirectory(view) {
@@ -1949,11 +2093,65 @@ async function renderExplorer(request: Request, env: Env): Promise<string> {
     }
 
     function parseXml(value) {
-      return new DOMParser().parseFromString(value, "application/xml");
+      const cleaned = String(value || "").replace(/[\\u0000-\\u0008\\u000B\\u000C\\u000E-\\u001F]/g, "");
+      const first = new DOMParser().parseFromString(cleaned, "application/xml");
+      if (!hasParserError(first)) return first;
+      const escaped = cleaned.replace(/&(?!([a-z]+|#\\d+|#x[0-9a-f]+);)/gi, "&amp;");
+      const second = new DOMParser().parseFromString(escaped, "application/xml");
+      return hasParserError(second) ? first : second;
+    }
+
+    function hasParserError(xml) {
+      return elementsByLocalName(xml, "parsererror").length > 0;
+    }
+
+    function elementsByLocalName(xml, localName) {
+      if (!xml || !xml.getElementsByTagName) return [];
+      return Array.from(xml.getElementsByTagName("*")).filter((node) => node.localName === localName);
     }
 
     function firstElementByLocalName(xml, localName) {
-      return Array.from(xml.getElementsByTagName("*")).find((node) => node.localName === localName) || null;
+      return elementsByLocalName(xml, localName)[0] || null;
+    }
+
+    function attr(element, localName) {
+      if (!element || !element.getAttribute) return "";
+      const direct = element.getAttribute(localName);
+      if (direct) return direct;
+      const attributes = element.attributes ? Array.from(element.attributes) : [];
+      const match = attributes.find((attribute) => attribute.localName === localName);
+      return match ? match.value : "";
+    }
+
+    function firstFilled(...values) {
+      return values.find((value) => String(value || "").trim()) || "";
+    }
+
+    function longestDescription(opfXml) {
+      let best = "";
+      for (const element of elementsByLocalName(opfXml, "description")) {
+        const text = descriptionFromElement(element);
+        if (text.length > best.length) best = text;
+      }
+      return best;
+    }
+
+    function metaContent(opfXml, names) {
+      const wanted = names.map((name) => name.toLowerCase());
+      for (const meta of elementsByLocalName(opfXml, "meta")) {
+        const name = (attr(meta, "name") || attr(meta, "property")).toLowerCase().replace(/^[^:]+:/, "");
+        if (!wanted.includes(name)) continue;
+        const content = attr(meta, "content") || meta.textContent || "";
+        if (content.trim()) return content.trim();
+      }
+      return "";
+    }
+
+    function matchXmlText(value, localName) {
+      const pattern = new RegExp("<(?:[\\\\w.-]+:)?" + localName + "\\\\b[^>]*>([\\\\s\\\\S]*?)</(?:[\\\\w.-]+:)?" + localName + ">", "i");
+      const match = String(value || "").match(pattern);
+      if (!match) return "";
+      return match[1].replace(/<!\\[CDATA\\[([\\s\\S]*?)\\]\\]>/g, "$1").trim();
     }
 
     function firstTextByLocalName(xml, localName) {
@@ -2064,7 +2262,13 @@ async function renderExplorer(request: Request, env: Env): Promise<string> {
     }
 
     function normalizeZipPath(path) {
-      return path.replace(/^\\/+/, "");
+      let value = String(path || "").replace(/\\\\/g, "/").replace(/^\\/+/, "");
+      try {
+        value = decodeURIComponent(value);
+      } catch (error) {
+        value = String(path || "").replace(/\\\\/g, "/").replace(/^\\/+/, "");
+      }
+      return value;
     }
 
     function cleanFilename(value) {
